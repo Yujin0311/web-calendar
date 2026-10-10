@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f7f9fc">
+  <title>清序 · 学习与复习计划</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="upgrade.css">
+  <style>[hidden]{display:none!important}</style>
+  <script defer src="auth.js"></script>
+  <script defer src="script.js"></script>
+</head>
+<body class="signed-out">
+  <div class="app-shell">
+    <header class="site-header">
+      <div class="brand"><span class="brand-mark">序</span><div><strong>清序</strong><small>学习与复习计划</small></div></div>
+      <nav class="nav" aria-label="主导航">
+        <button class="nav-button active" data-view="plan" type="button">计划预览</button>
+        <button class="nav-button" data-view="drafts" type="button">草稿箱 <span id="draft-count" class="count">0</span></button>
+        <button class="nav-button" data-view="settings" type="button">设置</button>
+      </nav>
+      <div id="account-menu" class="account-menu" hidden><span id="account-name"></span><button id="logout-button" class="text-button" type="button">退出登录</button></div>
+    </header>
+
+    <section id="auth-page" class="auth-page" aria-label="账户登录与注册">
+      <div class="auth-card">
+        <p class="eyebrow">YOUR SPACE</p>
+        <h1 id="auth-title">登录清序</h1>
+        <p class="auth-intro">登录后管理只属于你的学习计划。旧版浏览器数据可在首次登录时导入。</p>
+        <div class="auth-tabs"><button id="show-login" class="active" type="button">登录</button><button id="show-register" type="button">注册</button></div>
+        <form id="auth-form">
+          <label class="field"><span>账户名</span><input id="auth-username" type="text" autocomplete="username" minlength="3" maxlength="32" required></label>
+          <label class="field"><span>密码</span><span class="password-wrap"><input id="auth-password" type="password" autocomplete="current-password" minlength="8" maxlength="128" required><button id="toggle-password" type="button" aria-label="显示密码" aria-pressed="false">◉</button></span></label>
+          <p id="auth-error" class="form-error" role="alert" hidden></p>
+          <button id="auth-submit" class="button primary auth-submit" type="submit">登录</button>
+        </form>
+      </div>
+    </section>
+
+    <main>
+      <section class="hero">
+        <div><p class="eyebrow">PERSONAL STUDY PLANNER</p><h1>把学习安排好，<br><span>把复习留给日历。</span></h1><p class="hero-copy">录入一次任务，即可预览日程并导出到苹果日历。登录后数据保存在本机服务，浏览器保留离线缓存。</p></div>
+        <div class="hero-actions"><button id="new-task-button" class="button primary" type="button">＋ 新建任务</button><p>默认按北京时间导出</p></div>
+      </section>
+
+      <section id="view-plan" class="view">
+        <div class="stats" aria-label="计划概览"><div class="stat"><span>任务记录</span><strong id="stat-tasks">0</strong></div><div class="stat"><span>日程总数</span><strong id="stat-events">0</strong></div><div class="stat"><span>已完成</span><strong id="stat-done">0</strong></div></div>
+        <div class="content-grid">
+          <section class="panel calendar-panel"><div class="panel-heading"><div><p class="eyebrow">CALENDAR</p><h2>日历视图</h2></div><div class="month-controls"><button id="prev-month" class="icon-button" type="button" aria-label="上个月">‹</button><strong id="month-label"></strong><button id="next-month" class="icon-button" type="button" aria-label="下个月">›</button></div></div><div class="weekdays" aria-hidden="true"><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span></div><div id="calendar-grid" class="calendar-grid" aria-label="月历"></div><div class="calendar-key"><span><i class="key-dot"></i>有日程</span><span><i class="key-dot completed"></i>全部完成</span></div></section>
+          <section class="panel day-panel"><div class="panel-heading"><div><p class="eyebrow">DAILY PLAN</p><h2 id="selected-day-label">每日任务</h2></div><span id="day-total" class="pill">0 分钟</span></div><div id="day-list" class="day-list"></div></section>
+        </div>
+        <section class="panel export-panel"><div><p class="eyebrow">EXPORT</p><h2>带走你的日程</h2><p>ICS 下载只包含尚未导出的任务；CSV 和复制 ICS 文本包含当前完整计划。草稿箱任务不会导出。</p></div><div class="export-actions"><button id="download-ics" class="button primary" type="button">下载 .ics 文件</button><button id="download-csv" class="button secondary" type="button">下载 CSV 文件</button><button id="copy-ics" class="button ghost" type="button">复制 ICS 文本</button></div><div class="import-guide"><p><strong>Mac：</strong>下载 .ics 后双击文件，苹果日历会打开导入窗口；确认添加后，可通过 iCloud 同步到 iPhone。</p><p><strong>iPhone：</strong>在「文件」App 的下载项目中找到 .ics 文件，点开后按系统提供的选项导入日历。也可以在支持导入的日历服务中上传文件。</p></div></section>
+      </section>
+
+      <section id="view-drafts" class="view" hidden><div class="section-heading"><div><p class="eyebrow">DRAFTS</p><h2>草稿箱</h2><p>发生时间冲突后选择修改的任务会暂存在这里。编辑并重新提交即可再次生成日程。</p></div></div><div id="draft-list" class="draft-list"></div></section>
+
+      <section id="view-settings" class="view" hidden><div class="section-heading"><div><p class="eyebrow">PREFERENCES</p><h2>设置</h2><p>修改设置只影响之后新建或重新提交的任务，不会改写已生成的日程。</p></div></div><div class="settings-grid"><section class="panel settings-panel"><h3>复习与时间</h3><label class="field"><span>复习节点（相对起始日，逗号分隔）</span><input id="review-offsets" type="text" inputmode="numeric" placeholder="0, 1, 2, 4, 7, 15, 30"><small>必须包含第 0 天；不能重复。最大支持 3650 天。</small></label><label class="field"><span>非固定任务默认开始时间</span><input id="default-time" type="time"><small>生成后可在苹果日历中自行调整。</small></label><button id="save-settings" class="button secondary" type="button">保存设置</button></section><section class="panel settings-panel"><div class="row-between"><h3>任务分类</h3><span class="muted">名称「课程」启用节假日规则</span></div><div id="category-list" class="category-list"></div><form id="category-form" class="category-add"><input id="category-name" type="text" maxlength="24" placeholder="新增分类名称" required><input id="category-color" type="color" value="#6a8faf" aria-label="分类颜色"><button class="button secondary" type="submit">添加</button></form></section><section class="panel settings-panel holidays-panel"><h3>课程节假日</h3><p class="muted">内置 2025、2026 年国务院公布的放假日期，周六、周日不在跳过范围。其他年份请按官方安排增补，每行一个 YYYY-MM-DD 日期。</p><textarea id="holiday-dates" rows="8" spellcheck="false" aria-label="课程节假日日期"></textarea><button id="save-holidays" class="button secondary" type="button">保存日期</button><p class="muted">课程日程遇到这些日期时直接跳过，不顺延复习节点。</p></section></div></section>
+      <section id="export-tutorial" class="panel export-tutorial"><h3>ICS 文件导入苹果日历教程</h3><p><strong>Mac 操作：</strong></p><ol><li>点击「下载 .ics 文件」，文件通常保存到浏览器的「下载」文件夹（Downloads）。</li><li>找到下载的 .ics 文件，双击打开；也可在「日历」App 中选「文件 → 导入」。</li><li>在苹果「日历」App 中选择要加入的日历，确认导入。需要独立日历时请先手动新建；本版不会自动创建。</li><li>如目标日历使用 iCloud，导入的日程会同步到登录同一 Apple 账户的 iPhone。</li></ol><p><strong>iPhone 操作：</strong></p><ol><li>在「文件」App 的下载项目中找到 .ics 文件，点开或使用「打开方式」，按设备提供的选项添加到日历。</li><li>若设备未提供导入选项，可在 Mac 上导入到 iCloud 日历，之后等待 iPhone 同步。</li></ol></section>
+    </main>
+    <aside class="developer-credit" aria-label="开发者署名"><div><strong>此网站由聪明美丽的陈钰谨小姐和Codex开发</strong><span>如果你喜欢这个网站，请送个花花给我吧！</span></div><button id="flower-button" type="button" aria-label="送花花" title="送花花">🌸</button></aside>
+    <div id="petal-layer" class="petal-layer" aria-hidden="true"></div>
+    <footer>清序 · 账户数据保存在本机 SQLite，浏览器 localStorage 用作离线缓存。</footer>
+  </div>
+
+  <dialog id="task-dialog" class="modal"><form id="task-form" novalidate><div class="modal-heading"><div><p class="eyebrow">TASK</p><h2 id="task-dialog-title">新建任务</h2></div><button id="close-task" class="icon-button" type="button" aria-label="关闭">×</button></div><div class="form-grid"><label class="field full"><span>任务名称 <b>*</b></span><input id="task-name" type="text" maxlength="80" required placeholder="例如：高数第三章习题"></label><label class="field"><span>任务分类 <b>*</b></span><select id="task-category" required></select></label><label class="field"><span>任务起始日期 <b>*</b></span><input id="task-date" type="date" required></label><label class="field"><span>单次执行时长（分钟） <b>*</b></span><input id="task-duration" type="number" min="1" max="1440" step="1" value="45" required></label><label class="field"><span>提醒设置</span><select id="task-reminder"><option value="0">不提醒</option><option value="10">提前 10 分钟</option><option value="15" selected>提前 15 分钟</option><option value="30">提前 30 分钟</option></select></label><fieldset class="field full radio-field"><legend>时间设置方式</legend><label><input type="radio" name="time-mode" value="fixed" checked> 固定时间</label><label><input type="radio" name="time-mode" value="default"> 非固定时间（使用默认时间）</label></fieldset><label id="fixed-time-field" class="field full"><span>开始时间 <b>*</b></span><input id="task-time" type="time" value="09:00" required></label><label class="field full"><span>任务详情备注</span><textarea id="task-note" rows="3" maxlength="1000" placeholder="可填写学习内容、材料等，会写入日历描述"></textarea></label><label class="switch-row full"><span><strong>开启艾宾浩斯复习</strong><small>按设置中的节点一次性生成全部日程</small></span><input id="task-review" type="checkbox" checked></label></div><p id="form-error" class="form-error" role="alert" hidden></p><div class="modal-actions"><button id="cancel-task" class="button ghost" type="button">取消</button><button class="button primary" type="submit">生成并保存</button></div></form></dialog>
+
+  <dialog id="notice-dialog" class="modal small-modal"><div class="modal-heading"><h2 id="notice-title">提示</h2><button id="notice-close-x" class="icon-button" type="button" aria-label="关闭">×</button></div><p id="notice-message"></p><div class="modal-actions"><button id="notice-close" class="button primary" type="button">知道了</button></div></dialog>
+  <dialog id="conflict-dialog" class="modal small-modal"><div class="modal-heading"><h2>发现时间冲突</h2></div><p>以下日程在同一天的时间段发生重叠：</p><ul id="conflict-list" class="conflict-list"></ul><p class="muted">选择「不修改」会保留原样；选择「修改」会把当前整条任务移至草稿箱。</p><div class="modal-actions"><button id="conflict-keep" class="button ghost" type="button">不修改，保留</button><button id="conflict-draft" class="button primary" type="button">修改，放入草稿箱</button></div></dialog>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

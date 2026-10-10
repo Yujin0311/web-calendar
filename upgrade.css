@@ -1,0 +1,71 @@
+/* 第二版新增样式。保留第一版 style.css，便于对照学习。 */
+[hidden] { display: none !important; }
+
+/* 登录与注册页面：未登录时隐藏计划操作区。 */
+body.signed-out main,
+body.signed-out footer,
+body.signed-out .nav,
+body.signed-out .account-menu { display: none !important; }
+body:not(.signed-out) .auth-page { display: none; }
+.auth-page { min-height: calc(100vh - 90px); display: grid; place-items: center; padding: 35px 0; }
+.auth-card { width: min(430px, 100%); padding: 34px; background: #fff; border: 1px solid #e6edf2; border-radius: 20px; box-shadow: 0 14px 44px #284b6a12; }
+.auth-card h1 { font-size: 2rem; margin-bottom: 9px; }
+.auth-intro { font-size: .85rem; color: #8292a2; line-height: 1.65; }
+.auth-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; padding: 4px; margin: 24px 0; background: #f1f5f8; border-radius: 12px; }
+.auth-tabs button { border: 0; border-radius: 9px; padding: 10px; background: transparent; color: #8192a2; }
+.auth-tabs button.active { background: #fff; color: #356e92; box-shadow: 0 2px 8px #284b6a12; font-weight: 700; }
+.password-wrap { position: relative; display: block; }
+.password-wrap input { padding-right: 47px; }
+.password-wrap button { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); border: 0; border-radius: 7px; background: transparent; color: #6c8da4; width: 36px; height: 35px; font-size: 1.15rem; }
+.password-wrap button:hover { background: #eef5f9; }
+.auth-submit { width: 100%; margin-top: 9px; }
+.account-menu { display: flex; align-items: center; gap: 10px; color: #617a8d; font-size: .82rem; white-space: nowrap; }
+
+/* 单次删除和整套删除并列，按钮始终位于任务信息下方。 */
+.event-card .card-actions { flex-direction: column; align-items: flex-end; }
+.event-card .card-actions button { padding: 3px 0; }
+.event-card .card-actions .delete-event { color: #a87563; }
+
+/* 时间方式的圆形选项与文字固定在同一行。 */
+.radio-field label { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
+.radio-field label input { width: 16px; height: 16px; margin: 0; flex: none; order: 2; }
+
+/* 手动重复模块沿用第一版输入框、标签与浅色面板风格。 */
+.repeat-field { padding: 15px; margin: 4px 0 15px; background: #f7fafc; border: 1px solid #e4edf2; border-radius: 12px; }
+.repeat-field > label { color: #536c7f; font-size: .83rem; font-weight: 700; }
+.repeat-field select { margin: 3px 0 2px; }
+.repeat-weekdays { margin-top: 12px; }
+.repeat-weekdays > span { display: block; margin-bottom: 8px; color: #667f91; font-size: .77rem; }
+.repeat-weekdays > div { display: flex; flex-wrap: wrap; gap: 7px; }
+.repeat-weekdays label { display: inline-flex; align-items: center; gap: 5px; padding: 6px 8px; background: #fff; border: 1px solid #dbe7ee; border-radius: 8px; color: #637b8c; font-size: .76rem; cursor: pointer; }
+.repeat-weekdays input { width: 14px; height: 14px; margin: 0; accent-color: #4e86aa; }
+
+.export-tutorial { margin-top: 18px; color: #6d8192; line-height: 1.7; font-size: .83rem; }
+.export-panel .import-guide { display: none; }
+.export-tutorial h3 { color: #365b75; }
+.export-tutorial p { margin: 15px 0 5px; }
+.export-tutorial ol { margin: 0; padding-left: 22px; }
+.export-tutorial li { margin: 5px 0; }
+.export-memory-note { padding: 10px 12px; background: #f2f8fb; border-radius: 9px; color: #51758c; }
+
+/* 右下角署名与无交互遮挡的三秒花瓣动画。 */
+.app-shell { padding-bottom: 78px; } /* 页面底部留出空间，署名不会压住最后一行操作内容。 */
+.developer-credit { position: fixed; right: 14px; bottom: 13px; z-index: 20; display: flex; align-items: center; gap: 9px; max-width: 330px; padding: 9px 10px; background: #ffffffed; border: 1px solid #e8dfe8; border-radius: 13px; box-shadow: 0 5px 18px #284b6a18; }
+.developer-credit div { display: grid; gap: 3px; color: #755b71; font-size: .66rem; line-height: 1.4; pointer-events: none; }
+.developer-credit strong { font-weight: 650; }
+.developer-credit span { color: #a2889a; }
+.developer-credit button { flex: none; width: 35px; height: 35px; border: 0; border-radius: 50%; background: #fff0f7; font-size: 1.2rem; cursor: pointer; }
+.developer-credit button:hover { background: #fce0ed; }
+.petal-layer { position: fixed; inset: 0; overflow: hidden; pointer-events: none; z-index: 19; }
+.petal { position: absolute; top: -35px; left: var(--x); color: #e39fbd; font-size: var(--size); opacity: .7; text-shadow: 0 1px 3px #fff; will-change: transform; animation: petal-fall var(--duration) linear var(--delay) forwards; }
+@keyframes petal-fall { from { transform: translate3d(0, -20px, 0) rotate(0deg); opacity: 0; } 15% { opacity: .72; } to { transform: translate3d(var(--drift), 105vh, 0) rotate(var(--spin)); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .petal { animation: none; opacity: 0; } }
+
+@media (max-width: 700px) {
+  .site-header { flex-wrap: wrap; }
+  .account-menu { margin-left: auto; }
+  .auth-card { padding: 25px; }
+  .event-card .card-actions { flex-direction: row; align-items: center; flex-wrap: wrap; }
+  .developer-credit { max-width: 260px; padding: 7px; }
+  .developer-credit div { font-size: .57rem; }
+}
