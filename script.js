@@ -668,6 +668,138 @@
     layer.appendChild(petals);
     setTimeout(() => { layer.replaceChildren(); button.disabled = false; }, 3000);
   });
+
+  // 图片 OCR 与日程功能完全独立：文件直接交给 Tesseract.js 在浏览器 Web Worker 中识别。
+  function initOcr() {
+    const fileInput = $("#ocr-file"), cameraInput = $("#ocr-camera");
+    const startButton = $("#ocr-start"), copyButton = $("#ocr-copy");
+    const resultBox = $("#ocr-result"), preview = $("#ocr-preview");
+    const errorBox = $("#ocr-error"), status = $("#ocr-status");
+    const progress = $("#ocr-progress"), percent = $("#ocr-percent");
+    let selectedFile = null, previewUrl = null, selectionToken = 0, busy = false;
+    let libraryPromise = null;
+
+    function setProgress(value, label) {
+      const next = Math.max(Number(progress.value), Math.min(100, Math.round(value)));
+      progress.value = next;
+      percent.textContent = `${next}%`;
+      if (label) status.textContent = label;
+    }
+    function clearError() { errorBox.textContent = ""; errorBox.hidden = true; }
+    function showError(message) { errorBox.textContent = message; errorBox.hidden = false; status.textContent = "识别未完成"; }
+    function setBusy(value) {
+      busy = value;
+      startButton.disabled = value;
+      fileInput.disabled = value;
+      cameraInput.disabled = value;
+      copyButton.disabled = value || !resultBox.value;
+    }
+
+    // 仅按需加载 CDN 脚本；语言包、WASM 和 worker 由 Tesseract.js 自行下载到浏览器。
+    function loadLibrary() {
+      if (window.Tesseract?.createWorker) return Promise.resolve(window.Tesseract);
+      if (!libraryPromise) libraryPromise = new Promise((resolve, reject) => {
+        const script = document.createElement("script");
+        script.src = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
+        script.async = true;
+        script.onload = () => {
+          if (window.Tesseract?.createWorker) resolve(window.Tesseract);
+          else { script.remove(); reject(Error("OCR 组件未正确加载。")); }
+        };
+        script.onerror = () => { script.remove(); reject(Error("OCR 组件下载失败，请检查网络后重试。")); };
+        document.head.appendChild(script);
+      }).catch((error) => { libraryPromise = null; throw error; });
+      return libraryPromise;
+    }
+
+    function chooseImage(file) {
+      if (busy || !file) return;
+      const token = ++selectionToken;
+      selectedFile = null;
+      resultBox.value = "";
+      copyButton.disabled = true;
+      progress.value = 0;
+      percent.textContent = "0%";
+      clearError();
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+      previewUrl = null;
+      preview.hidden = true;
+      preview.removeAttribute("src");
+      if (!file.type.startsWith("image/") || file.size === 0) {
+        $("#ocr-file-name").textContent = "尚未选择可用图片";
+        showError("请选择可正常打开的图片文件。" );
+        return;
+      }
+      $("#ocr-file-name").textContent = file.name || "手机拍摄的图片";
+      status.textContent = "正在读取图片…";
+      let url;
+      try { url = URL.createObjectURL(file); }
+      catch { showError("图片加载失败，请更换图片重试。"); return; }
+      const image = new Image();
+      image.onload = () => {
+        if (token !== selectionToken) { URL.revokeObjectURL(url); return; }
+        if (!image.naturalWidth || !image.naturalHeight) { URL.revokeObjectURL(url); showError("图片加载失败，请更换图片重试。" ); return; }
+        previewUrl = url;
+        preview.src = url;
+        preview.hidden = false;
+        selectedFile = file;
+        status.textContent = "图片已就绪，点击开始识别";
+      };
+      image.onerror = () => {
+        URL.revokeObjectURL(url);
+        if (token === selectionToken) showError("图片加载失败，文件可能损坏或浏览器不支持该格式。" );
+      };
+      image.src = url;
+    }
+    fileInput.addEventListener("change", () => chooseImage(fileInput.files?.[0]));
+    cameraInput.addEventListener("change", () => chooseImage(cameraInput.files?.[0]));
+
+    startButton.addEventListener("click", async () => {
+      if (busy) return;
+      clearError();
+      if (!selectedFile) { showError("请先选择图片或使用手机拍照。" ); return; }
+      if (typeof Worker === "undefined") { showError("当前浏览器不支持 Web Worker，无法进行本地图片识别。" ); return; }
+      resultBox.value = "";
+      setBusy(true);
+      progress.value = 0;
+      percent.textContent = "0%";
+      status.textContent = "正在加载 OCR 组件…";
+      let worker = null;
+      try {
+        const tesseract = await loadLibrary();
+        setProgress(5, "正在加载简体中文和英文语言包…");
+        worker = await tesseract.createWorker(["chi_sim", "eng"], 1, {
+          logger(message) {
+            const amount = Number.isFinite(message.progress) ? message.progress : 0;
+            if (message.status === "recognizing text") setProgress(25 + amount * 74, "正在识别文字…");
+            else setProgress(5 + amount * 20, "正在准备识别引擎与语言包…");
+          }
+        });
+        const output = await worker.recognize(selectedFile);
+        // 不修剪空白、不解析字段，完整保留 OCR 返回的原始文本。
+        resultBox.value = output.data.text ?? "";
+        setProgress(100, resultBox.value ? "识别完成" : "识别完成，但未检测到文字");
+      } catch (error) {
+        showError(`OCR 识别失败：${error.message || "请更换图片或检查网络后重试。"}`);
+      } finally {
+        if (worker) {
+          try { await worker.terminate(); } catch { /* Worker 退出异常不影响错误提示。 */ }
+        }
+        setBusy(false);
+      }
+    });
+
+    copyButton.addEventListener("click", async () => {
+      if (!resultBox.value) { showError("目前没有可复制的识别文字。" ); return; }
+      try {
+        if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(resultBox.value);
+        else { resultBox.select(); if (!document.execCommand("copy")) throw Error("复制失败"); }
+        toast("识别文字已复制。" );
+      } catch { showError("复制失败，请在文本框中手动选择文字复制。" ); }
+    });
+  }
+  initOcr();
+
   window.QingxuAuth.boot({
     initialState,
     legacyLoader: loadState,
