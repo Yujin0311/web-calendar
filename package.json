@@ -9,6 +9,8 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
+    "invite": "node scripts/admin.js invite",
+    "clean-sessions": "node scripts/admin.js session clean",
     "test": "node tests/smoke.js && node tests/deepseek-schedule.js && node tests/deepseek-plan.js"
   },
   "dependencies": {
@@ -18,5 +20,8 @@
     "express": "^4.21.2",
     "jsonwebtoken": "^9.0.2",
     "openai": "^7.32.0"
+  },
+  "allowScripts": {
+    "better-sqlite3@13.0.3": true
   }
 }

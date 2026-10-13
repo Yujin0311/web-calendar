@@ -37,6 +37,8 @@
         <form id="auth-form">
           <label class="field"><span>账户名</span><input id="auth-username" type="text" autocomplete="username" minlength="3" maxlength="32" required></label>
           <label class="field"><span>密码</span><span class="password-wrap"><input id="auth-password" type="password" autocomplete="current-password" minlength="8" maxlength="128" required><button id="toggle-password" type="button" aria-label="显示密码" aria-pressed="false">◉</button></span></label>
+          <!-- 邀请码仅注册时显示；hidden 属性由 auth.js 按登录/注册模式切换。 -->
+          <label class="field" id="invite-field" hidden><span>邀请码</span><input id="auth-invite" type="text" autocomplete="off" maxlength="40" placeholder="形如 QX-XXXX-XXXX-XXXX"></label>
           <p id="auth-error" class="form-error" role="alert" hidden></p>
           <button id="auth-submit" class="button primary auth-submit" type="submit">登录</button>
         </form>

@@ -27,7 +27,8 @@ async function main() {
   const port = await freePort();
   const historyFile = path.join(temp, "export_history.json");
   const child = spawn(process.execPath, [path.join(root, "server.js")], {
-    cwd: root, env: { ...process.env, PORT: String(port), DEEPSEEK_API_KEY: "", QINGXU_DATA_DIR: path.join(temp, "data"), QINGXU_EXPORT_HISTORY_FILE: historyFile }, stdio: ["ignore", "pipe", "pipe"]
+    // REGISTER_MAX_ATTEMPTS 临时调高：冒烟测试要连续注册多个账户，不测试限流路径。
+    cwd: root, env: { ...process.env, PORT: String(port), DEEPSEEK_API_KEY: "", QINGXU_DATA_DIR: path.join(temp, "data"), QINGXU_EXPORT_HISTORY_FILE: historyFile, REGISTER_MAX_ATTEMPTS: "1000" }, stdio: ["ignore", "pipe", "pipe"]
   });
   let serverOutput = "";
   child.stdout.on("data", (chunk) => { serverOutput += chunk.toString(); });
@@ -53,7 +54,18 @@ async function main() {
     assert.equal(unauthenticatedAi.status, 401, "AI 图片接口必须校验登录状态");
     assert.equal((await api("/api/notes")).status, 401, "便签接口必须校验登录状态");
     assert.equal((await api("/api/ai-plan", "POST", {})).status, 401, "AI 规划接口必须校验登录状态");
-    const registration = await api("/api/auth/register", "POST", { username: `smoke${Date.now()}`, password: "SmokeTest123!" });
+    // 邀请码注册：先通过管理 CLI 在临时库生成邀请码，再验证负路径与正常注册。
+    const inviteCode = await new Promise((resolve, reject) => {
+      const cli = spawn(process.execPath, [path.join(root, "scripts", "admin.js"), "invite", "generate", "10", "smoke-test"], { cwd: root, env: { ...process.env, QINGXU_DATA_DIR: path.join(temp, "data") }, stdio: ["ignore", "pipe", "pipe"] });
+      let output = "";
+      cli.stdout.on("data", (chunk) => { output += chunk.toString(); });
+      cli.stderr.on("data", (chunk) => { output += chunk.toString(); });
+      cli.once("exit", (code) => code === 0 ? resolve((output.match(/QX-[2-9A-HJ-NP-Z]{4}-[2-9A-HJ-NP-Z]{4}-[2-9A-HJ-NP-Z]{4}/) || [])[0]) : reject(Error(`邀请码生成失败：${output}`)));
+    });
+    assert(inviteCode, "应能通过管理 CLI 生成邀请码");
+    assert.equal((await api("/api/auth/register", "POST", { username: `noinvite${Date.now()}`, password: "SmokeTest123!" })).status, 400, "无邀请码注册应被拒绝");
+    assert.equal((await api("/api/auth/register", "POST", { username: `badinvite${Date.now()}`, password: "SmokeTest123!", inviteCode: "QX-0000-0000-0000" })).status, 403, "无效邀请码注册应被拒绝");
+    const registration = await api("/api/auth/register", "POST", { username: `smoke${Date.now()}`, password: "SmokeTest123!", inviteCode });
     const registrationData = await registration.json();
     assert.equal(registration.status, 201, JSON.stringify(registrationData));
     token = registrationData.token;
@@ -67,7 +79,7 @@ async function main() {
     const updatedNote = await api(`/api/notes/${createdNote.id}`, "PUT", { content: "复习公式" });
     assert.equal((await updatedNote.json()).content, "复习公式");
     const noteOwnerToken = token;
-    const noteOtherRegistration = await api("/api/auth/register", "POST", { username: `note${Date.now()}`, password: "SmokeTest123!" });
+    const noteOtherRegistration = await api("/api/auth/register", "POST", { username: `note${Date.now()}`, password: "SmokeTest123!", inviteCode });
     assert.equal(noteOtherRegistration.status, 201);
     token = (await noteOtherRegistration.json()).token;
     assert.deepEqual(await (await api("/api/notes")).json(), [], "第二个账户不能读取第一个账户的便签");
@@ -149,7 +161,7 @@ async function main() {
     assert(Object.values(history.users).some((entry) => entry.exportedTaskIds.includes(repeat.id)));
     // 导出历史属于当前账户，另一个账户不能继承第一位用户的已导出 ID。
     const firstToken = token;
-    const secondRegistration = await api("/api/auth/register", "POST", { username: `other${Date.now()}`, password: "SmokeTest123!" });
+    const secondRegistration = await api("/api/auth/register", "POST", { username: `other${Date.now()}`, password: "SmokeTest123!", inviteCode });
     assert.equal(secondRegistration.status, 201);
     token = (await secondRegistration.json()).token;
     const otherHistory = await (await api("/api/export/history")).json();

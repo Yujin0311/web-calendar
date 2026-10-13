@@ -16,7 +16,8 @@
 | 表 | 主要字段 | 用途 |
 |---|---|---|
 | `users` | `id`, `username`（唯一）, `password_hash`, `created_at` | 账户和 bcrypt 加盐哈希密码 |
-| `sessions` | `jti`, `user_id`, `expires_at`, `created_at` | JWT 会话与退出失效 |
+| `sessions` | `jti`, `user_id`, `expires_at`, `created_at`, `last_activity_at`, `expire_at` | JWT 会话与退出失效；最后活跃时间与绝对过期时间（毫秒时间戳）用于空闲/绝对双重超时 |
+| `invite_codes` | `id`, `code`（唯一）, `max_use_count`, `used_count`, `is_active`, `created_at`, `note` | 注册邀请码：可限制使用次数、随时停用，备注方便管理 |
 | `categories` | `id`, `user_id`, `name`, `color` | 用户独立分类 |
 | `user_settings` | `user_id`, `offsets_json`, `default_time`, `holidays_json` | 复习和节假日设置 |
 | `tasks` | `id`, `user_id`, `category_id`, `name`, `start_date`, `end_date`, `duration`, `reminder`, `time_mode`, `start_time`, `note`, `review`, `all_day`, `plan_group`, `parent_task_id`, `repeat_type`, `repeat_weekdays_json`, `deleted_offsets_json`, `draft_form_json`, `status` | 任务、全天标记、AI 父子关联、重复设置和草稿 |
@@ -30,7 +31,7 @@
 
 | 方法 | 路径 | 作用 |
 |---|---|---|
-| POST | `/api/auth/register` | 注册并获得 JWT |
+| POST | `/api/auth/register` | 凭有效邀请码注册并获得 JWT；同 IP 高频尝试返回 429 |
 | POST | `/api/auth/login` | 登录并获得 JWT |
 | POST | `/api/auth/logout` | 注销当前 JWT 会话 |
 | GET | `/api/auth/me` | 查询当前账户 |
@@ -107,3 +108,60 @@ CREATE INDEX IF NOT EXISTS idx_notes_user_side ON notes(user_id, side, created_a
 ```
 
 路由挂在 `server.js` 已有鉴权中间件之后：`GET/POST /api/notes`、`PUT/DELETE /api/notes/:id` 位于 `/api/auth/me` 后；`POST /api/ai-plan` 位于图片解析路由后。所有新接口均使用现有 `auth` 中间件。
+
+## 邀请码注册与会话过期清理
+
+为防止低配 VPS 被脚本恶意批量注册撑爆数据库、以及僵尸会话堆积耗尽内存，注册与会话增加了两层保护。全部为增量实现，不影响既有账户与数据，也不引入 Redis 等新组件。
+
+### 邀请码注册
+
+注册接口必须携带有效邀请码，否则直接拒绝。校验顺序：邀请码存在且启用 → 使用次数未达上限 → 事务内创建用户并消耗次数（`used_count < max_use_count` 条件更新兜底，并发不会超用；任一步失败整体回滚）。错误提示按「需要邀请码（400）/ 邀请码无效（403）/ 邀请码已用完（403）/ 请求过于频繁（429）」区分。
+
+同一 IP 在 10 分钟内最多尝试注册 3 次（成功与失败都计入），超过返回 429。限流为进程内滑动窗口，服务重启后计数清零。
+
+邀请码通过命令行维护，无需后台页面：
+
+```powershell
+npm run invite -- generate 5 "给朋友A"      # 生成邀请码，数字为最大可用次数（默认 1），后面可写备注
+npm run invite -- list                      # 列出全部邀请码（已用/上限、状态、备注）
+npm run invite -- disable QX-XXXX-XXXX-XXXX # 停用指定邀请码
+```
+
+### 会话双重超时与定期清理
+
+`sessions` 表新增 `last_activity_at`（最后活跃时间）与 `expire_at`（绝对过期时间）两个毫秒时间戳字段。每次带 JWT 请求时服务端校验三重过期（原 JWT 过期、绝对超时、空闲超时），全部在服务端判断，不信任前端；通过校验后按节流间隔（默认 5 分钟）刷新 `last_activity_at`，避免高频请求写放大。
+
+- 空闲超时：默认 24 小时无任何请求即失效；
+- 绝对超时：默认 7 天，无论是否活跃强制失效；
+- 定时清理：服务进程内置定时器，启动 30 秒后补跑一次，之后默认每 2 小时执行一轮。清理拆成 3 条单条件删除（分别命中 `expires_at`、`expire_at`、`last_activity_at` 三个索引），每批 100 条循环删完，避免全表扫描拖垮低配机器。
+
+手动清理一次：
+
+```powershell
+npm run clean-sessions
+```
+
+### 配置项与迁移
+
+以下均为可选项，写在 `.env` 中（参见 `.env.example`），未设置时使用默认值：
+
+| 环境变量 | 默认值 | 含义 |
+|---|---|---|
+| `TRUST_PROXY` | `false` | 部署在 Nginx/Caddy 等反代后改为 `true`，否则限流会把所有请求算到代理 IP；直连时保持 `false` 防止伪造 `X-Forwarded-For` 绕过限流 |
+| `REGISTER_WINDOW_MINUTES` | `10` | 注册限流窗口（分钟） |
+| `REGISTER_MAX_ATTEMPTS` | `3` | 窗口内同 IP 最多注册尝试次数 |
+| `SESSION_IDLE_TIMEOUT_HOURS` | `24` | 会话空闲超时（小时） |
+| `SESSION_ABSOLUTE_TIMEOUT_DAYS` | `7` | 会话绝对超时（天） |
+| `SESSION_CLEANUP_INTERVAL_MINUTES` | `120` | 清理定时任务间隔（分钟） |
+| `SESSION_CLEANUP_BATCH_SIZE` | `100` | 每批删除会话条数 |
+| `SESSION_ACTIVITY_REFRESH_SECONDS` | `300` | 活跃时间刷新节流（秒） |
+
+数据库变更为 `migrations/001_invite_codes_and_session_cleanup.sql`，可手动执行：
+
+```powershell
+sqlite3 data/qingxu.sqlite < migrations/001_invite_codes_and_session_cleanup.sql
+```
+
+不手动执行也可以：`server.js` 启动时会幂等完成同样的建表与补列，并把历史会话的活跃时间回填为创建时间、绝对过期沿用原 `expires_at`，已有用户不会被强制下线。升级前建议先备份整个 `data/` 目录。
+
+冒烟测试已覆盖无邀请码（400）与无效邀请码（403）路径，`npm test` 会一并验证。

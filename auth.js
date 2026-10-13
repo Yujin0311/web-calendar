@@ -23,6 +23,9 @@
     $("#auth-title").textContent = mode === "register" ? "注册清序" : "登录清序";
     $("#auth-submit").textContent = mode === "register" ? "创建账户" : "登录";
     $("#auth-password").autocomplete = mode === "register" ? "new-password" : "current-password";
+    // 邀请码仅注册时显示；切换到登录时清空残留输入。
+    $("#invite-field").hidden = mode !== "register";
+    if (mode !== "register") $("#auth-invite").value = "";
     $("#show-login").classList.toggle("active", mode === "login");
     $("#show-register").classList.toggle("active", mode === "register");
     setError("");
@@ -105,13 +108,21 @@
     const password = $("#auth-password").value;
     if (!/^[\p{L}\p{N}_-]{3,32}$/u.test(username)) { setError("账户名须为 3–32 位字母、数字、下划线或短横线。"); return; }
     if (password.length < 8 || password.length > 128) { setError("密码须为 8–128 个字符。"); return; }
+    const body = { username, password };
+    if (mode === "register") {
+      // 注册必须携带邀请码；缺失时先在本端提示，不打扰服务器。
+      const inviteCode = $("#auth-invite").value.trim();
+      if (!inviteCode) { setError("注册需要邀请码，请向管理员索取。"); return; }
+      body.inviteCode = inviteCode;
+    }
     const button = $("#auth-submit");
     button.disabled = true;
     try {
-      const result = await request(`/auth/${mode}`, "POST", { username, password });
+      const result = await request(`/auth/${mode}`, "POST", body);
       session = result;
       localStorage.setItem(SESSION_KEY, JSON.stringify(session));
       $("#auth-password").value = "";
+      $("#auth-invite").value = "";
       await loadForAccount();
     } catch (error) {
       setError(error.message === "Failed to fetch" ? "无法连接服务器，请先运行 npm start。" : error.message);

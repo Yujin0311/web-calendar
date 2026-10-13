@@ -10,6 +10,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const { makeICS } = require("./ics-export");
+const { cleanExpiredSessions } = require("./session-cleanup");
 const { parseScheduleFromImage } = require("./services/deepseekSchedule");
 const { makeStudyPlan } = require("./services/deepseekPlan");
 
@@ -31,6 +32,23 @@ const secretFile = path.join(DATA_DIR, "jwt-secret");
 if (!process.env.JWT_SECRET && !fs.existsSync(secretFile)) fs.writeFileSync(secretFile, crypto.randomBytes(48).toString("hex"), { mode: 0o600 });
 const JWT_SECRET = process.env.JWT_SECRET || fs.readFileSync(secretFile, "utf8").trim();
 
+// ===== 安全增量配置：全部可用 .env / 环境变量覆盖，未设置时使用下列默认值 =====
+const envNum = (key, fallback) => { const value = Number(process.env[key]); return Number.isFinite(value) && value > 0 ? value : fallback; };
+// 注册限流：同一 IP 在窗口期内最多尝试注册的次数（成功与失败都计入）。
+const REGISTER_WINDOW_MINUTES = envNum("REGISTER_WINDOW_MINUTES", 10);
+const REGISTER_MAX_ATTEMPTS = envNum("REGISTER_MAX_ATTEMPTS", 3);
+// 会话空闲超时（小时）与绝对超时（天）。
+const SESSION_IDLE_TIMEOUT_HOURS = envNum("SESSION_IDLE_TIMEOUT_HOURS", 24);
+const SESSION_ABSOLUTE_TIMEOUT_DAYS = envNum("SESSION_ABSOLUTE_TIMEOUT_DAYS", 7);
+// 会话清理定时任务：运行间隔（分钟）与每批删除条数（分批避免大批量删除拖垮 CPU）。
+const SESSION_CLEANUP_INTERVAL_MINUTES = envNum("SESSION_CLEANUP_INTERVAL_MINUTES", 120);
+const SESSION_CLEANUP_BATCH_SIZE = envNum("SESSION_CLEANUP_BATCH_SIZE", 100);
+// 活跃时间刷新节流（秒）：间隔内的重复请求不写库，降低低配 VPS 磁盘写入。
+const SESSION_ACTIVITY_REFRESH_SECONDS = envNum("SESSION_ACTIVITY_REFRESH_SECONDS", 300);
+const SESSION_IDLE_MS = SESSION_IDLE_TIMEOUT_HOURS * 3600000;
+const SESSION_ABSOLUTE_MS = SESSION_ABSOLUTE_TIMEOUT_DAYS * 86400000;
+const SESSION_REFRESH_MS = SESSION_ACTIVITY_REFRESH_SECONDS * 1000;
+
 db.exec(`
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
@@ -42,7 +60,20 @@ CREATE TABLE IF NOT EXISTS sessions (
   jti TEXT PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   expires_at INTEGER NOT NULL,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  -- 增量会话保护字段（毫秒时间戳）：last_activity_at 最后活跃时间，expire_at 绝对过期时间。
+  last_activity_at INTEGER NOT NULL,
+  expire_at INTEGER NOT NULL
+);
+-- 邀请码注册：一个邀请码可按 max_use_count 供多人使用，可随时停用。
+CREATE TABLE IF NOT EXISTS invite_codes (
+  id TEXT PRIMARY KEY,
+  code TEXT NOT NULL UNIQUE,
+  max_use_count INTEGER NOT NULL DEFAULT 1,
+  used_count INTEGER NOT NULL DEFAULT 0,
+  is_active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  note TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS categories (
   id TEXT NOT NULL,
@@ -110,6 +141,10 @@ CREATE TABLE IF NOT EXISTS notes (
 CREATE INDEX IF NOT EXISTS idx_tasks_user_status ON tasks(user_id, status);
 CREATE INDEX IF NOT EXISTS idx_occurrences_user_date ON occurrences(user_id, event_date);
 CREATE INDEX IF NOT EXISTS idx_notes_user_side ON notes(user_id, side, created_at);
+-- 会话清理索引：让每条清理条件都能精准定位过期行，避免全表扫描。
+CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
+CREATE INDEX IF NOT EXISTS idx_sessions_expire_at ON sessions(expire_at);
+CREATE INDEX IF NOT EXISTS idx_sessions_last_activity ON sessions(last_activity_at);
 `);
 // 已启动过早期第二版的本机数据库也补上“单条删除”的持久记录。
 if (!db.prepare("PRAGMA table_info(tasks)").all().some((column) => column.name === "deleted_offsets_json")) db.exec("ALTER TABLE tasks ADD COLUMN deleted_offsets_json TEXT NOT NULL DEFAULT '[]'");
@@ -120,6 +155,11 @@ if (!db.prepare("PRAGMA table_info(tasks)").all().some((column) => column.name =
 if (!db.prepare("PRAGMA table_info(tasks)").all().some((column) => column.name === "all_day")) db.exec("ALTER TABLE tasks ADD COLUMN all_day INTEGER NOT NULL DEFAULT 0");
 if (!db.prepare("PRAGMA table_info(tasks)").all().some((column) => column.name === "plan_group")) db.exec("ALTER TABLE tasks ADD COLUMN plan_group INTEGER NOT NULL DEFAULT 0");
 if (!db.prepare("PRAGMA table_info(tasks)").all().some((column) => column.name === "parent_task_id")) db.exec("ALTER TABLE tasks ADD COLUMN parent_task_id TEXT");
+// 旧数据库增量补齐会话超时字段：历史会话的活跃时间回填为创建时间、绝对过期沿用原 expires_at，不强制已有用户下线。
+if (!db.prepare("PRAGMA table_info(sessions)").all().some((column) => column.name === "expire_at")) {
+  db.exec("ALTER TABLE sessions ADD COLUMN last_activity_at INTEGER NOT NULL DEFAULT 0; ALTER TABLE sessions ADD COLUMN expire_at INTEGER NOT NULL DEFAULT 0;");
+  db.exec("UPDATE sessions SET last_activity_at = CAST(strftime('%s', created_at) AS INTEGER) * 1000, expire_at = expires_at WHERE last_activity_at = 0");
+}
 
 app.disable("x-powered-by");
 app.use(express.json({ limit: "10mb" }));
@@ -140,8 +180,12 @@ function auth(req, res, next) {
     const token = readBearer(req);
     if (!token) return fail(res, 401, "请先登录。");
     const payload = jwt.verify(token, JWT_SECRET, { algorithms: ["HS256"] });
-    const session = db.prepare("SELECT user_id, expires_at FROM sessions WHERE jti = ?").get(payload.jti);
-    if (!session || session.user_id !== payload.sub || session.expires_at <= Date.now()) return fail(res, 401, "登录已失效，请重新登录。");
+    const nowMs = Date.now();
+    const session = db.prepare("SELECT user_id, expires_at, expire_at, last_activity_at FROM sessions WHERE jti = ?").get(payload.jti);
+    // 服务端三重校验：原 JWT 过期、绝对超时、空闲超时。过期判断只查数据库，不信任前端。
+    if (!session || session.user_id !== payload.sub || session.expires_at <= nowMs || session.expire_at <= nowMs || nowMs - session.last_activity_at > SESSION_IDLE_MS) return fail(res, 401, "登录已失效，请重新登录。");
+    // 每次请求刷新最后活跃时间；按节流间隔写库，避免高频请求造成写放大。
+    if (nowMs - session.last_activity_at >= SESSION_REFRESH_MS) db.prepare("UPDATE sessions SET last_activity_at = ? WHERE jti = ?").run(nowMs, payload.jti);
     req.userId = payload.sub;
     req.jti = payload.jti;
     next();
@@ -149,22 +193,70 @@ function auth(req, res, next) {
 }
 function issueToken(userId) {
   const jti = newId();
-  const expiresAt = Date.now() + 30 * 24 * 60 * 60 * 1000;
-  db.prepare("INSERT INTO sessions(jti,user_id,expires_at,created_at) VALUES(?,?,?,?)").run(jti, userId, expiresAt, now());
-  return jwt.sign({ sub: userId, jti }, JWT_SECRET, { algorithm: "HS256", expiresIn: "30d" });
+  const nowMs = Date.now();
+  const expiresAt = nowMs + 30 * 24 * 60 * 60 * 1000; // 原有 30 天 JWT 有效期保持不变
+  // 绝对超时可配置：与原 expires_at 取更早者写入 expire_at，作为强制失效时间。
+  const expireAt = Math.min(expiresAt, nowMs + SESSION_ABSOLUTE_MS);
+  db.prepare("INSERT INTO sessions(jti,user_id,expires_at,created_at,last_activity_at,expire_at) VALUES(?,?,?,?,?,?)").run(jti, userId, expiresAt, now(), nowMs, expireAt);
+  return jwt.sign({ sub: userId, jti }, JWT_SECRET, { algorithm: "HS256", expiresIn: Math.floor((expireAt - nowMs) / 1000) });
 }
+
+// ===== 功能1：邀请码注册 + 注册 IP 限流（阻止脚本恶意批量注册） =====
+// 限流为进程内滑动窗口（轻量方案，不引入 Redis）；服务重启后计数清零，属可接受折衷。
+const registerAttempts = new Map(); // ip -> 窗口期内的尝试时间戳数组
+function clientIp(req) {
+  // 仅当部署在 Nginx/Caddy 等反代后并设置 TRUST_PROXY=true 时才信任转发头，防止伪造绕过限流。
+  if (process.env.TRUST_PROXY === "true") {
+    const forwarded = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
+    if (forwarded) return forwarded;
+  }
+  return req.socket.remoteAddress || "unknown";
+}
+function allowRegister(ip) {
+  const nowMs = Date.now();
+  const windowMs = REGISTER_WINDOW_MINUTES * 60000;
+  const recent = (registerAttempts.get(ip) || []).filter((attempt) => nowMs - attempt < windowMs);
+  if (recent.length >= REGISTER_MAX_ATTEMPTS) { registerAttempts.set(ip, recent); return false; }
+  recent.push(nowMs);
+  registerAttempts.set(ip, recent);
+  // 防止攻击者用海量假 IP 撑爆内存：超过上限时清理窗口期外的记录。
+  if (registerAttempts.size > 10000) {
+    for (const [key, attempts] of registerAttempts) {
+      if (!attempts.some((attempt) => nowMs - attempt < windowMs)) registerAttempts.delete(key);
+      if (registerAttempts.size <= 5000) break;
+    }
+  }
+  return true;
+}
+// 创建用户与消耗邀请码次数放在同一事务：better-sqlite3 同步执行天然串行，
+// 叠加 used_count < max_use_count 条件更新，双重防止并发超用。
+const registerWithInvite = db.transaction((userId, username, hash, inviteCode) => {
+  db.prepare("INSERT INTO users(id,username,password_hash,created_at) VALUES(?,?,?,?)").run(userId, username, hash, now());
+  const consumed = db.prepare("UPDATE invite_codes SET used_count = used_count + 1 WHERE code = ? AND is_active = 1 AND used_count < max_use_count").run(inviteCode);
+  if (!consumed.changes) throw Error("INVITE_EXHAUSTED");
+});
 
 app.post("/api/auth/register", async (req, res) => {
   const username = String(req.body?.username || "").trim();
   const password = req.body?.password;
+  const inviteCode = String(req.body?.inviteCode || "").trim().toUpperCase();
   if (!/^[\p{L}\p{N}_-]{3,32}$/u.test(username)) return fail(res, 400, "账户名须为 3–32 位字母、数字、下划线或短横线。");
   if (typeof password !== "string" || password.length < 8 || password.length > 128) return fail(res, 400, "密码须为 8–128 个字符。");
+  // ① 没有邀请码禁止注册；② 同一 IP 高频尝试直接限流，不再进入邀请码校验和 bcrypt 计算。
+  if (!inviteCode) return fail(res, 400, "注册需要邀请码，请向管理员索取。");
+  if (!allowRegister(clientIp(req))) return fail(res, 429, `注册尝试过于频繁，请 ${REGISTER_WINDOW_MINUTES} 分钟后再试。`);
+  // 邀请码预检：无效 / 已用完分别给出可区分的错误；真正扣次在下方事务中条件更新兜底。
+  const invite = db.prepare("SELECT max_use_count, used_count FROM invite_codes WHERE code = ? AND is_active = 1").get(inviteCode);
+  if (!invite) return fail(res, 403, "邀请码无效，请核对后重试。");
+  if (invite.used_count >= invite.max_use_count) return fail(res, 403, "邀请码已被用完，请联系管理员。");
   if (db.prepare("SELECT 1 FROM users WHERE username = ?").get(username)) return fail(res, 409, "账户名已被使用。");
   const hash = await bcrypt.hash(password, 12);
   const userId = newId();
   try {
-    db.prepare("INSERT INTO users(id,username,password_hash,created_at) VALUES(?,?,?,?)").run(userId, username, hash, now());
+    registerWithInvite(userId, username, hash, inviteCode);
   } catch (error) {
+    // 事务内任一步失败都会整体回滚：邀请码次数不扣、用户不创建。
+    if (error.message === "INVITE_EXHAUSTED") return fail(res, 403, "邀请码已被用完，请联系管理员。");
     if (error.code?.startsWith("SQLITE_CONSTRAINT")) return fail(res, 409, "账户名已被使用。");
     throw error;
   }
@@ -446,4 +538,16 @@ app.use((error, req, res, next) => {
   console.error(error);
   fail(res, 500, "服务器内部错误。");
 });
+// ===== 功能2：过期会话定期清理（进程内定时器，防止僵尸会话堆积耗尽 CPU/内存） =====
+function runSessionCleanup(reason) {
+  try {
+    const deleted = cleanExpiredSessions(db, SESSION_CLEANUP_BATCH_SIZE, Date.now() - SESSION_IDLE_MS);
+    if (deleted) console.log(`会话清理（${reason}）：已删除 ${deleted} 条过期会话。`);
+  } catch (error) { console.error("会话清理失败：", error); }
+}
+// 启动 30 秒后补跑一次，清掉停机期间积累的过期会话；随后按固定间隔执行。
+// 定时器均 unref()，不阻止进程正常退出，也不影响测试。
+setTimeout(() => runSessionCleanup("启动补跑"), 30 * 1000).unref();
+setInterval(() => runSessionCleanup("定时任务"), SESSION_CLEANUP_INTERVAL_MINUTES * 60000).unref();
+
 app.listen(PORT, HOST, () => console.log(`清序已启动：http://localhost:${PORT}`));
