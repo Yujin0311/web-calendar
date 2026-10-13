@@ -9,6 +9,9 @@
   <link rel="stylesheet" href="upgrade.css">
   <style>[hidden]{display:none!important}</style>
   <script defer src="auth.js"></script>
+  <script defer src="ai-schedule-client.js"></script>
+  <script defer src="notes-client.js"></script>
+  <script defer src="ai-plan-client.js"></script>
   <script defer src="script.js"></script>
 </head>
 <body class="signed-out">
@@ -20,6 +23,7 @@
         <button class="nav-button" data-view="drafts" type="button">草稿箱 <span id="draft-count" class="count">0</span></button>
         <button class="nav-button" data-view="settings" type="button">设置</button>
         <button class="nav-button" data-view="ocr" type="button">图片识别导入</button>
+        <button class="nav-button" data-view="ai-plan" type="button">AI 规划助手</button>
       </nav>
       <div id="account-menu" class="account-menu" hidden><span id="account-name"></span><button id="logout-button" class="text-button" type="button">退出登录</button></div>
     </header>
@@ -49,6 +53,7 @@
         <div class="stats" aria-label="计划概览"><div class="stat"><span>任务记录</span><strong id="stat-tasks">0</strong></div><div class="stat"><span>日程总数</span><strong id="stat-events">0</strong></div><div class="stat"><span>已完成</span><strong id="stat-done">0</strong></div></div>
         <div class="content-grid">
           <section class="panel calendar-panel"><div class="panel-heading"><div><p class="eyebrow">CALENDAR</p><h2>日历视图</h2></div><div class="month-controls"><button id="prev-month" class="icon-button" type="button" aria-label="上个月">‹</button><strong id="month-label"></strong><button id="next-month" class="icon-button" type="button" aria-label="下个月">›</button></div></div><div class="weekdays" aria-hidden="true"><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span></div><div id="calendar-grid" class="calendar-grid" aria-label="月历"></div><div class="calendar-key"><span><i class="key-dot"></i>有日程</span><span><i class="key-dot completed"></i>全部完成</span></div></section>
+          <section class="panel task-search-panel" aria-label="搜索全部任务"><label class="field" for="task-search"><span>搜索全部任务</span><input id="task-search" type="search" placeholder="输入任务名称、分类或备注关键词" autocomplete="off"></label><div class="task-search-toolbar"><span id="task-search-count" class="muted" role="status"></span><button id="task-search-delete" class="button ghost" type="button" disabled>批量删除已勾选任务</button></div><div id="task-search-results" class="task-search-results" hidden></div></section>
           <section class="panel day-panel"><div class="panel-heading"><div><p class="eyebrow">DAILY PLAN</p><h2 id="selected-day-label">每日任务</h2></div><span id="day-total" class="pill">0 分钟</span></div><div id="day-list" class="day-list"></div></section>
         </div>
         <section class="panel export-panel"><div><p class="eyebrow">EXPORT</p><h2>带走你的日程</h2><p>ICS 下载只包含尚未导出的任务；CSV 和复制 ICS 文本包含当前完整计划。草稿箱任务不会导出。</p></div><div class="export-actions"><button id="download-ics" class="button primary" type="button">下载 .ics 文件</button><button id="download-csv" class="button secondary" type="button">下载 CSV 文件</button><button id="copy-ics" class="button ghost" type="button">复制 ICS 文本</button></div><div class="import-guide"><p><strong>Mac：</strong>下载 .ics 后双击文件，苹果日历会打开导入窗口；确认添加后，可通过 iCloud 同步到 iPhone。</p><p><strong>iPhone：</strong>在「文件」App 的下载项目中找到 .ics 文件，点开后按系统提供的选项导入日历。也可以在支持导入的日历服务中上传文件。</p></div></section>
@@ -57,19 +62,45 @@
       <section id="view-drafts" class="view" hidden><div class="section-heading"><div><p class="eyebrow">DRAFTS</p><h2>草稿箱</h2><p>发生时间冲突后选择修改的任务会暂存在这里。编辑并重新提交即可再次生成日程。</p></div></div><div id="draft-list" class="draft-list"></div></section>
 
       <section id="view-settings" class="view" hidden><div class="section-heading"><div><p class="eyebrow">PREFERENCES</p><h2>设置</h2><p>修改设置只影响之后新建或重新提交的任务，不会改写已生成的日程。</p></div></div><div class="settings-grid"><section class="panel settings-panel"><h3>复习与时间</h3><label class="field"><span>复习节点（相对起始日，逗号分隔）</span><input id="review-offsets" type="text" inputmode="numeric" placeholder="0, 1, 2, 4, 7, 15, 30"><small>必须包含第 0 天；不能重复。最大支持 3650 天。</small></label><label class="field"><span>非固定任务默认开始时间</span><input id="default-time" type="time"><small>生成后可在苹果日历中自行调整。</small></label><button id="save-settings" class="button secondary" type="button">保存设置</button></section><section class="panel settings-panel"><div class="row-between"><h3>任务分类</h3><span class="muted">名称「课程」启用节假日规则</span></div><div id="category-list" class="category-list"></div><form id="category-form" class="category-add"><input id="category-name" type="text" maxlength="24" placeholder="新增分类名称" required><input id="category-color" type="color" value="#6a8faf" aria-label="分类颜色"><button class="button secondary" type="submit">添加</button></form></section><section class="panel settings-panel holidays-panel"><h3>课程节假日</h3><p class="muted">内置 2025、2026 年国务院公布的放假日期，周六、周日不在跳过范围。其他年份请按官方安排增补，每行一个 YYYY-MM-DD 日期。</p><textarea id="holiday-dates" rows="8" spellcheck="false" aria-label="课程节假日日期"></textarea><button id="save-holidays" class="button secondary" type="button">保存日期</button><p class="muted">课程日程遇到这些日期时直接跳过，不顺延复习节点。</p></section></div></section>
-      <!-- OCR 只读取用户在此页选择的图片；识别结果停留在文本框中，不进入日程或数据库。 -->
+      <section id="view-ai-plan" class="view" hidden aria-labelledby="ai-plan-title">
+        <div class="section-heading"><div><p class="eyebrow">AI STUDY PLAN</p><h2 id="ai-plan-title">AI 规划助手</h2><p>输入目标和现状，先核对 AI 给出的阶段任务，再选择需要导入的内容。</p></div></div>
+        <div class="panel ai-plan-panel">
+          <form id="ai-plan-form">
+            <label class="field"><span>学习目标 <b>*</b></span><textarea id="ai-plan-goal" maxlength="500" rows="3" required placeholder="例如：两个月内完成高数上册并掌握常见题型"></textarea></label>
+            <div class="ai-plan-date-grid"><label class="field"><span>开始日期 <b>*</b></span><input id="ai-plan-start" type="date" required></label><label class="field"><span>结束日期 <b>*</b></span><input id="ai-plan-end" type="date" required></label></div>
+            <label class="field"><span>目前的基础情况</span><textarea id="ai-plan-background" maxlength="2000" rows="3" placeholder="例如：已学完第一章，每天大约可用 1 小时"></textarea></label>
+            <div class="field ai-plan-clock" role="group" aria-labelledby="ai-plan-clock-label"><span id="ai-plan-clock-label">是否需要精确安排到几点？ <b>*</b></span><div class="ai-plan-clock-options"><label><input type="radio" name="ai-plan-precise" value="no" checked required> 否，生成全天日程</label><label><input type="radio" name="ai-plan-precise" value="yes" required> 是，安排具体时间</label></div></div>
+            <label class="field"><span>一天中效率最高的时间段（选填）</span><input id="ai-plan-preferred-window" type="text" maxlength="120" placeholder="例如：上午 9:00–11:00"></label>
+            <button id="ai-plan-generate" class="button primary" type="submit">生成规划</button>
+            <span id="ai-plan-status" role="status" aria-live="polite"></span>
+            <p id="ai-plan-error" class="form-error" role="alert" hidden></p>
+          </form>
+          <div id="ai-plan-result" hidden><h3 id="ai-plan-result-title"></h3><p class="muted">勾选要导入的子任务。学习目标会单独保存为父任务，每项子任务也会独立保存。</p><div id="ai-plan-stages"></div><label class="ai-plan-group-review"><input id="ai-plan-review-whole" type="checkbox"> 为父任务开启艾宾浩斯复习</label>
+            <div class="ai-plan-actions"><button id="ai-plan-import-selected" class="button secondary" type="button">导入勾选任务</button><button id="ai-plan-import-all" class="button primary" type="button">一键全部导入</button><button id="ai-plan-discard" class="button ghost" type="button">放弃此规划</button></div>
+          </div>
+          <p class="muted">AI 规划结果仅在当前页面暂存；放弃或刷新后即丢弃。确认导入后任务才会保存到当前账户。</p>
+        </div>
+      </section>
+      <!-- 照片由后端转发给 DeepSeek 解析；用户确认前不保存到任务数据库。 -->
       <section id="view-ocr" class="view" hidden aria-labelledby="ocr-title">
-        <div class="section-heading"><div><p class="eyebrow">IMAGE OCR</p><h2 id="ocr-title">图片识别导入</h2><p>选择图片或使用手机拍照，提取其中的原始文字。识别在浏览器本地进行，图片不会上传到服务器。</p></div></div>
+        <div class="section-heading"><div><p class="eyebrow">IMAGE SCHEDULE</p><h2 id="ocr-title">图片识别导入</h2><p>上传大学周课表，核对全部课程，填写学期日期和节次时间后批量生成日程。</p></div></div>
         <div class="panel ocr-panel">
           <div class="ocr-source-buttons"><label class="button secondary">选择本地图片<input id="ocr-file" class="ocr-file-input" type="file" accept="image/*"></label><label class="button ghost">手机拍照上传<input id="ocr-camera" class="ocr-file-input" type="file" accept="image/*" capture="environment"></label></div>
           <p id="ocr-file-name" class="muted">尚未选择图片</p>
           <img id="ocr-preview" class="ocr-preview" alt="待识别图片预览" hidden>
-          <div class="ocr-actions"><button id="ocr-start" class="button primary" type="button">开始识别</button><span id="ocr-status" role="status" aria-live="polite">等待选择图片</span></div>
-          <div class="ocr-progress"><label for="ocr-progress">识别进度：<strong id="ocr-percent">0%</strong></label><progress id="ocr-progress" max="100" value="0">0%</progress></div>
+          <div class="ocr-actions"><button id="ocr-start" class="button primary" type="button">AI 解析日程</button><span id="ocr-status" role="status" aria-live="polite">等待选择图片</span></div>
           <p id="ocr-error" class="form-error" role="alert" hidden></p>
-          <label class="field ocr-result-label" for="ocr-result"><span>识别出的原始文字</span><textarea id="ocr-result" rows="12" readonly placeholder="识别完成后，文字会完整显示在这里。"></textarea></label>
-          <button id="ocr-copy" class="button secondary" type="button" disabled>复制文本</button>
-          <p class="muted ocr-hint">首次使用需要联网下载 Tesseract.js 引擎和简体中文、英文语言包，之后由浏览器缓存。识别结果不会自动生成日程。</p>
+          <article id="ai-schedule-draft" class="ai-schedule-draft" hidden aria-label="AI 课程草稿">
+            <p class="eyebrow">待确认课程草稿</p><h3>核对课程并选择导入项</h3>
+            <label class="ai-select-all"><input id="ai-select-all" type="checkbox" checked> 全选课程</label>
+            <div id="ai-course-list" class="ai-course-list"></div>
+            <div class="ai-term-settings"><label class="field"><span>学期第 1 周的周一日期 <b>*</b></span><input id="ai-term-monday" type="date"></label><p class="muted">周次以这一天为基准计算。无法识别的课程名称、星期、节次或周次，可直接在上方修正。</p></div>
+            <h4>节次时间表</h4><p class="muted">只需填写所选课程用到的开始节次时间和结束节次时间。请以学校课表为准。</p>
+            <div id="ai-section-times" class="ai-section-times"></div>
+            <p class="muted">点击确认后将批量生成所选课程的每周日程，并按现有规则处理节假日与时间冲突。</p>
+            <button id="ai-draft-confirm" class="button primary" type="button">确认并批量生成日程</button>
+          </article>
+          <p class="muted ocr-hint">图片将发送到 DeepSeek API 进行视觉解析；解析结果在你确认并保存前不会写入任务数据库。支持 JPG、PNG、GIF、WebP，图片不超过 6 MB。</p>
         </div>
       </section>
       <section id="export-tutorial" class="panel export-tutorial"><h3>ICS 文件导入苹果日历教程</h3><p><strong>Mac 操作：</strong></p><ol><li>点击「下载 .ics 文件」，文件通常保存到浏览器的「下载」文件夹（Downloads）。</li><li>找到下载的 .ics 文件，双击打开；也可在「日历」App 中选「文件 → 导入」。</li><li>在苹果「日历」App 中选择要加入的日历，确认导入。需要独立日历时请先手动新建；本版不会自动创建。</li><li>如目标日历使用 iCloud，导入的日程会同步到登录同一 Apple 账户的 iPhone。</li></ol><p><strong>iPhone 操作：</strong></p><ol><li>在「文件」App 的下载项目中找到 .ics 文件，点开或使用「打开方式」，按设备提供的选项添加到日历。</li><li>若设备未提供导入选项，可在 Mac 上导入到 iCloud 日历，之后等待 iPhone 同步。</li></ol></section>
@@ -78,6 +109,9 @@
     <div id="petal-layer" class="petal-layer" aria-hidden="true"></div>
     <footer>清序 · 账户数据保存在本机 SQLite，浏览器 localStorage 用作离线缓存。</footer>
   </div>
+
+  <!-- 便签仅在桌面版左侧显示；旧版右侧便签也在这里显示，不丢失数据。 -->
+  <aside id="notes-left" class="notes-sidebar notes-left" aria-label="左侧随手便签"><h2>随手便签 <small id="notes-count">0/30</small></h2><div class="notes-list"></div><form class="notes-add-form"><textarea maxlength="250" rows="3" placeholder="记下一点想法…（最多250字）" aria-label="新增便签" required></textarea><button class="button secondary" type="submit">＋ 新增便签</button></form><p class="notes-message" role="status"></p></aside>
 
   <dialog id="task-dialog" class="modal"><form id="task-form" novalidate><div class="modal-heading"><div><p class="eyebrow">TASK</p><h2 id="task-dialog-title">新建任务</h2></div><button id="close-task" class="icon-button" type="button" aria-label="关闭">×</button></div><div class="form-grid"><label class="field full"><span>任务名称 <b>*</b></span><input id="task-name" type="text" maxlength="80" required placeholder="例如：高数第三章习题"></label><label class="field"><span>任务分类 <b>*</b></span><select id="task-category" required></select></label><label class="field"><span>任务起始日期 <b>*</b></span><input id="task-date" type="date" required></label><label class="field"><span>单次执行时长（分钟） <b>*</b></span><input id="task-duration" type="number" min="1" max="1440" step="1" value="45" required></label><label class="field"><span>提醒设置</span><select id="task-reminder"><option value="0">不提醒</option><option value="10">提前 10 分钟</option><option value="15" selected>提前 15 分钟</option><option value="30">提前 30 分钟</option></select></label><fieldset class="field full radio-field"><legend>时间设置方式</legend><label><input type="radio" name="time-mode" value="fixed" checked> 固定时间</label><label><input type="radio" name="time-mode" value="default"> 非固定时间（使用默认时间）</label></fieldset><label id="fixed-time-field" class="field full"><span>开始时间 <b>*</b></span><input id="task-time" type="time" value="09:00" required></label><label class="field full"><span>任务详情备注</span><textarea id="task-note" rows="3" maxlength="1000" placeholder="可填写学习内容、材料等，会写入日历描述"></textarea></label><label class="switch-row full"><span><strong>开启艾宾浩斯复习</strong><small>按设置中的节点一次性生成全部日程</small></span><input id="task-review" type="checkbox" checked></label></div><p id="form-error" class="form-error" role="alert" hidden></p><div class="modal-actions"><button id="cancel-task" class="button ghost" type="button">取消</button><button class="button primary" type="submit">生成并保存</button></div></form></dialog>
 

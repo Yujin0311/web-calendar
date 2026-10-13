@@ -9,7 +9,8 @@
     { id: "words", name: "背单词", color: "#8c9bc8" },
     { id: "course", name: "课程", color: "#74a896" },
     { id: "practice", name: "刷题", color: "#d49a70" },
-    { id: "reading", name: "阅读", color: "#a48eb8" }
+    { id: "reading", name: "阅读", color: "#a48eb8" },
+    { id: "all-day", name: "全天", color: "#85aaa2" }
   ];
 
   // 国务院办公厅 2025、2026 年放假通知中的日期；下面仅保留工作日。
@@ -81,7 +82,9 @@
   let selectedDate = todayShanghai();
   let displayedMonth = selectedDate.slice(0, 7);
   let editing = null; // { source: "tasks" | "drafts", id }
+  let aiDraftInTaskForm = false; // 仅标记当前表单是否来自 AI 草稿。
   let toastTimer;
+  const selectedSearchTaskIds = new Set();
 
   function save() {
     try { return window.QingxuAuth.save(state); }
@@ -153,10 +156,11 @@
 
   // 半开区间 [开始, 结束)；一个任务刚好在另一个任务结束时开始，不算冲突。
   function findConflicts(candidate, excludedTaskId) {
+    if (candidate.allDay) return []; // 全天事件没有时段，不与钟点任务冲突。
     // 按日期建立索引，长周期的每天重复任务无需反复扫描全部日程。
     const existingByDate = new Map();
     for (const entry of allEntries()) {
-      if (entry.task.id === excludedTaskId) continue;
+      if (entry.task.id === excludedTaskId || entry.task.allDay) continue;
       const sameDay = existingByDate.get(entry.event.date) || [];
       sameDay.push(entry);
       existingByDate.set(entry.event.date, sameDay);
@@ -173,7 +177,7 @@
   }
   function overloadedDays() {
     const totals = new Map();
-    for (const { event } of allEntries()) totals.set(event.date, (totals.get(event.date) || 0) + event.duration);
+    for (const { task, event } of allEntries()) if (!task.allDay) totals.set(event.date, (totals.get(event.date) || 0) + event.duration);
     return [...totals].filter(([, total]) => total > 960).map(([date]) => date);
   }
 
@@ -224,6 +228,7 @@
     $("#stat-done").textContent = entries.filter(({ event }) => event.completed).length;
     $("#draft-count").textContent = state.drafts.length;
     renderCalendar(entries);
+    renderSearch();
     renderDay(entries);
     // 在原任务卡片上增补“仅删除本次”，保留已有的整条任务删除行为。
     $$(".event-card").forEach((card) => {
@@ -255,19 +260,46 @@
       return `<button class="${classes}" type="button" data-date="${date}" aria-label="${date}，${dayEvents.length} 项日程"><span class="day-number">${Number(date.slice(-2))}</span>${dots}</button>`;
     }).join("");
   }
+  // 搜索的是当前账户的全部主计划任务，一条任务只出现一次，不按复习日程重复列出。
+  function renderSearch() {
+    const query = $("#task-search").value.trim().toLocaleLowerCase();
+    const results = $("#task-search-results");
+    if (!query) {
+      selectedSearchTaskIds.clear(); results.hidden = true; results.replaceChildren();
+      $("#task-search-count").textContent = "输入关键词搜索全部任务";
+      $("#task-search-delete").disabled = true;
+      return;
+    }
+    const matches = state.tasks.filter((task) => [task.name, task.note, categoryFor(task).name]
+      .some((value) => String(value || "").toLocaleLowerCase().includes(query)));
+    const visibleIds = new Set(matches.map((task) => task.id));
+    for (const taskId of selectedSearchTaskIds) if (!visibleIds.has(taskId)) selectedSearchTaskIds.delete(taskId);
+    results.hidden = false;
+    results.innerHTML = matches.length ? matches.map((task) =>
+      `<label class="task-search-row"><input class="task-search-check" type="checkbox" data-id="${escapeHtml(task.id)}" ${selectedSearchTaskIds.has(task.id) ? "checked" : ""} aria-label="选择任务 ${escapeHtml(task.name)}"><span><strong>${escapeHtml(task.name)}</strong> · ${escapeHtml(task.date)} · ${escapeHtml(categoryFor(task).name)}${task.parentTaskId ? " · 子任务" : task.planGroup ? " · 父任务" : ""}</span></label>`).join("") : '<p class="muted">没有找到匹配的任务。</p>';
+    $("#task-search-count").textContent = `找到 ${matches.length} 条任务，已勾选 ${selectedSearchTaskIds.size} 条`;
+    $("#task-search-delete").disabled = selectedSearchTaskIds.size === 0;
+  }
+  function deleteTaskRecords(ids) {
+    const removed = new Set(ids);
+    state.tasks = state.tasks.filter((task) => !removed.has(task.id));
+    // 子任务是独立任务；删除父任务时只解除关联，不连带删除子任务。
+    for (const task of [...state.tasks, ...state.drafts]) if (removed.has(task.parentTaskId)) task.parentTaskId = null;
+    for (const taskId of removed) selectedSearchTaskIds.delete(taskId);
+  }
   function renderDay(entries) {
     const dayEntries = entries.filter(({ event }) => event.date === selectedDate);
-    const total = dayEntries.reduce((sum, { event }) => sum + event.duration, 0);
+    const total = dayEntries.reduce((sum, { task, event }) => sum + (task.allDay ? 0 : event.duration), 0);
     $("#selected-day-label").textContent = `${selectedDate.slice(5, 7)} 月 ${selectedDate.slice(8)} 日任务`;
     $("#day-total").textContent = `${Math.floor(total / 60)} 小时 ${total % 60} 分钟`;
     $("#day-list").innerHTML = dayEntries.length ? dayEntries.map(({ task, event }) => {
       const category = categoryFor(task);
-      return `<article class="event-card ${event.completed ? "done" : ""}"><input class="complete-check" type="checkbox" data-task-id="${escapeHtml(task.id)}" data-event-id="${escapeHtml(event.id)}" ${event.completed ? "checked" : ""} aria-label="完成 ${escapeHtml(task.name)} ${escapeHtml(typeLabel(event))}"><div class="event-main"><div class="event-name">${escapeHtml(task.name)}</div><div class="event-meta">${tagHtml(category)}<span>${escapeHtml(typeLabel(event))}</span><span>${escapeHtml(event.time)}–${escapeHtml(eventEnd(event).time)}</span>${task.timeMode === "default" ? "<span>默认时间</span>" : ""}</div>${task.note ? `<p class="event-note">${escapeHtml(task.note)}</p>` : ""}</div><div class="card-actions"><button class="text-button edit-task" type="button" data-id="${escapeHtml(task.id)}">编辑</button><button class="text-button danger delete-task" type="button" data-id="${escapeHtml(task.id)}" title="删除整条任务及全部复习日程">删除</button></div></article>`;
+      return `<article class="event-card ${event.completed ? "done" : ""}"><input class="complete-check" type="checkbox" data-task-id="${escapeHtml(task.id)}" data-event-id="${escapeHtml(event.id)}" ${event.completed ? "checked" : ""} aria-label="完成 ${escapeHtml(task.name)} ${escapeHtml(typeLabel(event))}"><div class="event-main"><div class="event-name">${escapeHtml(task.name)}</div><div class="event-meta">${tagHtml(category)}<span>${escapeHtml(typeLabel(event))}</span><span>${task.allDay ? "全天" : `${escapeHtml(event.time)}–${escapeHtml(eventEnd(event).time)}`}</span>${!task.allDay && task.timeMode === "default" ? "<span>默认时间</span>" : ""}</div>${task.note ? `<p class="event-note">${escapeHtml(task.note)}</p>` : ""}</div><div class="card-actions"><button class="text-button edit-task" type="button" data-id="${escapeHtml(task.id)}">编辑</button><button class="text-button danger delete-task" type="button" data-id="${escapeHtml(task.id)}" title="删除整条任务及全部复习日程">删除</button></div></article>`;
     }).join("") : `<div class="empty-state"><strong>这一天还没有日程</strong>选择其他日期，或新建一条任务。</div>`;
   }
   function renderDrafts() {
     $("#draft-list").innerHTML = state.drafts.length ? state.drafts.map((task) =>
-      `<article class="draft-card"><div>${tagHtml(categoryFor(task))}<h3>${escapeHtml(task.name)}</h3><p>起始日期 ${escapeHtml(task.date)} · ${task.duration} 分钟 · ${task.review ? "艾宾浩斯复习" : (task.draftForm?.repeatType || task.recurrence?.type || "none") !== "none" ? "手动重复" : "单次任务"}</p></div><div class="draft-actions"><button class="button secondary edit-draft" type="button" data-id="${escapeHtml(task.id)}">编辑并提交</button><button class="button ghost delete-draft" type="button" data-id="${escapeHtml(task.id)}">删除</button></div></article>`).join("") : `<div class="empty-state"><strong>草稿箱是空的</strong>发生时间冲突并选择修改时，任务会出现在这里。</div>`;
+      `<article class="draft-card"><div>${tagHtml(categoryFor(task))}<h3>${escapeHtml(task.name)}</h3><p>起始日期 ${escapeHtml(task.date)} · ${task.allDay ? "全天" : `${task.duration} 分钟`} · ${task.review ? "艾宾浩斯复习" : (task.draftForm?.repeatType || task.recurrence?.type || "none") !== "none" ? "手动重复" : "单次任务"}</p></div><div class="draft-actions"><button class="button secondary edit-draft" type="button" data-id="${escapeHtml(task.id)}">编辑并提交</button><button class="button ghost delete-draft" type="button" data-id="${escapeHtml(task.id)}">删除</button></div></article>`).join("") : `<div class="empty-state"><strong>草稿箱是空的</strong>发生时间冲突并选择修改时，任务会出现在这里。</div>`;
   }
   function renderCategorySelect(selectedId) {
     const select = $("#task-category");
@@ -284,6 +316,7 @@
 
   function openTask(source = null, taskId = null) {
     if (!window.QingxuAuth.isAuthenticated()) { showNotice("请先登录", "登录后才能新建或编辑任务。"); return; }
+    aiDraftInTaskForm = false;
     editing = source && taskId ? { source, id: taskId } : null;
     const task = editing ? state[source].find((item) => item.id === taskId) : null;
     const draftForm = source === "drafts" ? task?.draftForm : null;
@@ -293,25 +326,39 @@
     $("#form-error").hidden = true;
     renderCategorySelect(task?.categoryId);
     $("#task-name").value = draftForm?.name ?? task?.name ?? "";
+    $("#task-name").maxLength = task?.planGroup ? 500 : 80;
     $("#task-date").value = draftForm?.date ?? task?.date ?? todayShanghai();
     $("#task-end-date").value = draftForm?.endDate ?? (task?.endDate || addDays(task?.date || todayShanghai(), task?.review === false ? 0 : Math.max(...state.settings.offsets)));
     $("#task-duration").value = draftForm?.duration ?? task?.duration ?? 45;
     $("#task-reminder").value = String(task?.reminder ?? 15);
     $("#task-time").value = draftForm?.time ?? task?.time ?? state.settings.defaultTime;
     $("#task-note").value = draftForm?.note ?? task?.note ?? "";
+    $("#task-note").maxLength = task?.planGroup ? 100000 : 1000;
     $("#task-review").checked = task?.review ?? true;
     $("#task-repeat").value = draftForm?.repeatType ?? task?.recurrence?.type ?? "none";
     $$("#repeat-weekdays input").forEach((input) => { input.checked = Boolean((draftForm?.weekdays ?? task?.recurrence?.weekdays)?.includes(input.value)); });
     $(`input[name="time-mode"][value="${task?.timeMode || "fixed"}"]`).checked = true;
     updateTimeVisibility();
     updateRepeatVisibility();
+    updateAllDayVisibility();
+    // AI 大任务的细分日程已在确认页排好；编辑时仅开放标题和备注，避免误生成丢失细分日程。
+    for (const selector of ["#task-category", "#task-date", "#task-end-date", "#task-duration", "#task-reminder", "#task-time", "#task-repeat", "#task-review"]) $(selector).disabled = Boolean(task?.planGroup);
+    $$('input[name="time-mode"], #repeat-weekdays input').forEach((input) => { input.disabled = Boolean(task?.planGroup); });
     $("#task-dialog").showModal();
     $("#task-name").focus();
   }
   function updateTimeVisibility() {
+    const allDay = state.categories.find((item) => item.id === $("#task-category").value)?.name === "全天";
     const fixed = $("input[name='time-mode']:checked").value === "fixed";
-    $("#fixed-time-field").hidden = !fixed;
-    $("#task-time").required = fixed;
+    $("#fixed-time-field").hidden = allDay || !fixed;
+    $("#task-time").required = !allDay && fixed;
+  }
+  function updateAllDayVisibility() {
+    const allDay = state.categories.find((item) => item.id === $("#task-category").value)?.name === "全天";
+    $("#task-duration").closest("label").hidden = allDay;
+    $("#task-reminder").closest("label").hidden = allDay;
+    $("input[name='time-mode']").closest("fieldset").hidden = allDay;
+    updateTimeVisibility();
   }
   function updateRepeatVisibility() {
     const repeated = $("#task-repeat").value !== "none";
@@ -321,12 +368,13 @@
   function formError(message) { $("#form-error").textContent = message; $("#form-error").hidden = false; }
   function readTaskForm() {
     const name = $("#task-name").value.trim(), categoryId = $("#task-category").value;
-    const date = $("#task-date").value, endDate = $("#task-end-date").value, duration = Number($("#task-duration").value);
-    const reminder = Number($("#task-reminder").value);
+    const allDay = state.categories.find((item) => item.id === categoryId)?.name === "全天";
+    const date = $("#task-date").value, endDate = $("#task-end-date").value, duration = allDay ? 1 : Number($("#task-duration").value);
+    const reminder = allDay ? 0 : Number($("#task-reminder").value);
     const repeatType = $("#task-repeat").value;
     const weekdays = repeatType === "weekly" ? $$("#repeat-weekdays input:checked").map((input) => input.value) : [];
-    const timeMode = $("input[name='time-mode']:checked").value;
-    const time = timeMode === "fixed" ? $("#task-time").value : state.settings.defaultTime;
+    const timeMode = allDay ? "fixed" : $("input[name='time-mode']:checked").value;
+    const time = allDay ? "00:00" : timeMode === "fixed" ? $("#task-time").value : state.settings.defaultTime;
     if (!name) throw Error("请填写任务名称。");
     if (!state.categories.some((item) => item.id === categoryId)) throw Error("请选择任务分类。");
     if (!isValidDate(date)) throw Error("请选择有效的起始日期。");
@@ -336,11 +384,16 @@
     if (!Number.isInteger(duration) || duration < 1 || duration > 1440) throw Error("执行时长须为 1–1440 分钟的整数。");
     if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) throw Error("请选择有效的开始时间。");
     if (minutes(time) + duration > 1440) throw Error("单次任务不能跨越午夜，请调整开始时间或时长。");
-    return { name, categoryId, categoryName: state.categories.find((item) => item.id === categoryId).name, date, endDate, duration, reminder, timeMode, time, note: $("#task-note").value.trim(), review: repeatType === "none" && $("#task-review").checked, recurrence: { type: repeatType, weekdays } };
+    return { name, categoryId, categoryName: state.categories.find((item) => item.id === categoryId).name, date, endDate, duration, reminder, timeMode, time, allDay, note: $("#task-note").value.trim(), review: repeatType === "none" && $("#task-review").checked, recurrence: { type: repeatType, weekdays } };
   }
   function saveManualDraft() {
     if (!window.QingxuAuth.isAuthenticated()) return;
     const old = editing ? state[editing.source].find((task) => task.id === editing.id) : null;
+    if (old?.planGroup) {
+      const updated = { ...old, name: $("#task-name").value.trim() || old.name, note: $("#task-note").value.trim() };
+      state[editing.source] = state[editing.source].filter((item) => item.id !== old.id);
+      state.drafts.push(updated); save(); render(); $("#task-dialog").close(); showView("drafts"); toast("整套规划已存入草稿箱。"); return;
+    }
     const draftForm = { name: $("#task-name").value, date: $("#task-date").value, endDate: $("#task-end-date").value, duration: $("#task-duration").value, time: $("#task-time").value, note: $("#task-note").value, repeatType: $("#task-repeat").value, weekdays: $$("#repeat-weekdays input:checked").map((input) => input.value) };
     const categoryId = $("#task-category").value || state.categories[0]?.id;
     const category = state.categories.find((item) => item.id === categoryId);
@@ -354,18 +407,29 @@
     const time = /^([01]\d|2[0-3]):[0-5]\d$/.test(rawTime) ? rawTime : state.settings.defaultTime;
     const validRepeat = endDate && (dateValue(endDate) - dateValue(date)) / 86400000 <= 3650 && (draftForm.repeatType !== "weekly" || draftForm.weekdays.length);
     const recurrence = validRepeat ? { type: draftForm.repeatType, weekdays: draftForm.repeatType === "weekly" ? draftForm.weekdays : [] } : { type: "none", weekdays: [] };
-    const task = { id: old?.id || id(), name: $("#task-name").value.trim() || "未命名草稿", categoryId, categoryName: category?.name || "未分类", date, endDate, duration, reminder: Number($("#task-reminder").value), timeMode, time, note: $("#task-note").value.trim(), review: recurrence.type === "none" && $("#task-review").checked, recurrence, deletedOffsets: old?.deletedOffsets || [], draftForm, events: [] };
+    const allDay = category?.name === "全天";
+    const task = { id: old?.id || id(), parentTaskId: old?.parentTaskId || null, name: $("#task-name").value.trim() || "未命名草稿", categoryId, categoryName: category?.name || "未分类", date, endDate, duration: allDay ? 1 : duration, reminder: allDay ? 0 : Number($("#task-reminder").value), timeMode: allDay ? "fixed" : timeMode, time: allDay ? "00:00" : time, allDay, note: $("#task-note").value.trim(), review: recurrence.type === "none" && $("#task-review").checked, recurrence, deletedOffsets: old?.deletedOffsets || [], draftForm, events: [] };
     if (old) state[editing.source] = state[editing.source].filter((item) => item.id !== old.id);
     state.drafts.push(task);
-    save(); render(); $("#task-dialog").close(); showView("drafts");
+    save();
+    if (aiDraftInTaskForm) { window.QingxuAI.consume(); aiDraftInTaskForm = false; }
+    render(); $("#task-dialog").close(); showView("drafts");
     toast("已存入草稿箱，之后可继续编辑并提交。");
   }
   async function submitTask(event) {
     event.preventDefault();
+    const original = editing ? state[editing.source].find((task) => task.id === editing.id) : null;
+    if (original?.planGroup) {
+      const name = $("#task-name").value.trim(), note = $("#task-note").value.trim();
+      if (!name || name.length > 500 || note.length > 100000) { formError("请核对学习目标（最多500字）和备注（最多100000字）。"); return; }
+      state[editing.source] = state[editing.source].filter((task) => task.id !== original.id);
+      state.tasks.push({ ...original, name, note });
+      save(); render(); $("#task-dialog").close(); showView("plan"); toast("整套规划已保存。"); return;
+    }
     let values;
     try { values = readTaskForm(); } catch (error) { formError(error.message); return; }
     const old = editing ? state[editing.source].find((task) => task.id === editing.id) : null;
-    const candidate = { ...values, id: old?.id || id(), deletedOffsets: old?.deletedOffsets || [], events: [] };
+    const candidate = { ...values, id: old?.id || id(), parentTaskId: old?.parentTaskId || null, deletedOffsets: old?.deletedOffsets || [], events: [] };
     if (categoryFor(candidate).name === "课程") {
       const years = candidate.recurrence.type !== "none"
         ? new Set(Array.from({ length: Number(candidate.endDate.slice(0, 4)) - Number(candidate.date.slice(0, 4)) + 1 }, (_, index) => String(Number(candidate.date.slice(0, 4)) + index)))
@@ -386,12 +450,15 @@
     if (choice === "draft") {
       candidate.events = []; // 草稿再次提交时重新生成，并使用当时的设置。
       state.drafts.push(candidate);
-      save(); render(); showView("drafts");
+      save();
+      if (aiDraftInTaskForm) { window.QingxuAI.consume(); aiDraftInTaskForm = false; }
+      render(); showView("drafts");
       toast("任务已移至草稿箱，请修改后重新提交。");
       return;
     }
     state.tasks.push(candidate);
     save();
+    if (aiDraftInTaskForm) { window.QingxuAI.consume(); aiDraftInTaskForm = false; }
     selectedDate = candidate.events[0].date;
     displayedMonth = selectedDate.slice(0, 7);
     render(); showView("plan");
@@ -468,6 +535,11 @@
     return lines.join("\r\n");
   }
   function icsDate(date, time) { return `${date.replace(/-/g, "")}T${time.replace(":", "")}00`; }
+  function icsEventDates(task, event) {
+    if (task.allDay) return [`DTSTART;VALUE=DATE:${event.date.replace(/-/g, "")}`, `DTEND;VALUE=DATE:${addDays(event.date, 1).replace(/-/g, "")}`];
+    const end = eventEnd(event);
+    return [`DTSTART;TZID=Asia/Shanghai:${icsDate(event.date, event.time)}`, `DTEND;TZID=Asia/Shanghai:${icsDate(end.date, end.time)}`];
+  }
   function timestampUtc() { return new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z"); }
   function makeICSLegacy() {
     const lines = [
@@ -476,14 +548,12 @@
     ];
     const stamp = timestampUtc();
     for (const { task, event } of allEntries()) {
-      const end = eventEnd(event);
       lines.push("BEGIN:VEVENT", `UID:${event.id}@qingxu.local`, `DTSTAMP:${stamp}`,
-        `DTSTART;TZID=Asia/Shanghai:${icsDate(event.date, event.time)}`,
-        `DTEND;TZID=Asia/Shanghai:${icsDate(end.date, end.time)}`,
+        ...icsEventDates(task, event),
         `SUMMARY:${icsEscape(fullTitle(task))}`,
         `CATEGORIES:${icsEscape(categoryFor(task).name)}`,
         `DESCRIPTION:${icsEscape(task.note ? `${task.note}\n\n${typeLabel(event)}` : typeLabel(event))}`);
-      if (task.reminder > 0) lines.push("BEGIN:VALARM", "ACTION:DISPLAY", `DESCRIPTION:${icsEscape(fullTitle(task))}`, `TRIGGER:-PT${task.reminder}M`, "END:VALARM");
+      if (!task.allDay && task.reminder > 0) lines.push("BEGIN:VALARM", "ACTION:DISPLAY", `DESCRIPTION:${icsEscape(fullTitle(task))}`, `TRIGGER:-PT${task.reminder}M`, "END:VALARM");
       lines.push("END:VEVENT");
     }
     lines.push("END:VCALENDAR");
@@ -522,17 +592,16 @@
         if (repeat.type === "weekly") rule += `;BYDAY=${repeat.weekdays.join(",")}`;
         if (repeat.type === "monthly") rule += `;BYMONTHDAY=${Number(task.date.slice(8))}`;
         if (repeat.type === "yearly") rule += `;BYMONTH=${Number(task.date.slice(5, 7))};BYMONTHDAY=${Number(task.date.slice(8))}`;
-        rule += `;UNTIL=${until}`;
-        lines.push("BEGIN:VEVENT", `UID:${task.id}@qingxu.local`, `DTSTAMP:${stamp}`, `DTSTART;TZID=Asia/Shanghai:${icsDate(first, time)}`, `DTEND;TZID=Asia/Shanghai:${icsDate(end.date, end.time)}`, `SUMMARY:${icsEscape(title)}`, `CATEGORIES:${icsEscape(category)}`, `RRULE:${rule}`);
-        if (excluded.length) lines.push(`EXDATE;TZID=Asia/Shanghai:${excluded.map((date) => icsDate(date, time)).join(",")}`);
+        rule += `;UNTIL=${task.allDay ? task.endDate.replace(/-/g, "") : until}`;
+        lines.push("BEGIN:VEVENT", `UID:${task.id}@qingxu.local`, `DTSTAMP:${stamp}`, ...icsEventDates(task, { date: first, time, duration: task.duration }), `SUMMARY:${icsEscape(title)}`, `CATEGORIES:${icsEscape(category)}`, `RRULE:${rule}`);
+        if (excluded.length) lines.push(task.allDay ? `EXDATE;VALUE=DATE:${excluded.map((date) => date.replace(/-/g, "")).join(",")}` : `EXDATE;TZID=Asia/Shanghai:${excluded.map((date) => icsDate(date, time)).join(",")}`);
         lines.push(`DESCRIPTION:${icsEscape(task.note)}`);
-        if (task.reminder > 0) lines.push("BEGIN:VALARM", "ACTION:DISPLAY", `DESCRIPTION:${icsEscape(title)}`, `TRIGGER:-PT${task.reminder}M`, "END:VALARM");
+        if (!task.allDay && task.reminder > 0) lines.push("BEGIN:VALARM", "ACTION:DISPLAY", `DESCRIPTION:${icsEscape(title)}`, `TRIGGER:-PT${task.reminder}M`, "END:VALARM");
         lines.push("END:VEVENT");
       } else {
         for (const event of task.events) {
-          const end = eventEnd(event);
-          lines.push("BEGIN:VEVENT", `UID:${event.id}@qingxu.local`, `DTSTAMP:${stamp}`, `DTSTART;TZID=Asia/Shanghai:${icsDate(event.date, event.time)}`, `DTEND;TZID=Asia/Shanghai:${icsDate(end.date, end.time)}`, `SUMMARY:${icsEscape(title)}`, `CATEGORIES:${icsEscape(category)}`, `DESCRIPTION:${icsEscape(task.note ? `${task.note}\n\n${typeLabel(event)}` : typeLabel(event))}`);
-          if (task.reminder > 0) lines.push("BEGIN:VALARM", "ACTION:DISPLAY", `DESCRIPTION:${icsEscape(title)}`, `TRIGGER:-PT${task.reminder}M`, "END:VALARM");
+          lines.push("BEGIN:VEVENT", `UID:${event.id}@qingxu.local`, `DTSTAMP:${stamp}`, ...icsEventDates(task, event), `SUMMARY:${icsEscape(title)}`, `CATEGORIES:${icsEscape(category)}`, `DESCRIPTION:${icsEscape(task.note ? `${task.note}\n\n${typeLabel(event)}` : typeLabel(event))}`);
+          if (!task.allDay && task.reminder > 0) lines.push("BEGIN:VALARM", "ACTION:DISPLAY", `DESCRIPTION:${icsEscape(title)}`, `TRIGGER:-PT${task.reminder}M`, "END:VALARM");
           lines.push("END:VEVENT");
         }
       }
@@ -543,7 +612,7 @@
   function csvCell(value) { const text = String(value ?? ""); return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text; }
   function makeCSV() {
     const rows = [["日期", "开始时间", "结束时间", "分类", "任务名称", "任务类型", "备注"]];
-    for (const { task, event } of allEntries()) rows.push([event.date, event.time, eventEnd(event).time, categoryFor(task).name, task.name, typeLabel(event), task.note]);
+    for (const { task, event } of allEntries()) rows.push([event.date, task.allDay ? "" : event.time, task.allDay ? "" : eventEnd(event).time, categoryFor(task).name, task.name, typeLabel(event), task.note]);
     return "\uFEFF" + rows.map((row) => row.map(csvCell).join(",")).join("\r\n") + "\r\n";
   }
   function download(content, filename, mime) {
@@ -582,21 +651,27 @@
       if (!confirm(`仅删除「${task.name}」在 ${occurrence.date} 的这一次日程？${last ? "这是最后一条日程，任务记录也会删除。" : `其余 ${task.events.length - 1} 条日程会保留。`}`)) return;
       task.events = task.events.filter((entry) => entry.id !== occurrence.id);
       task.deletedOffsets = [...new Set([...(task.deletedOffsets || []), occurrence.offset])];
-      if (!task.events.length) state.tasks = state.tasks.filter((entry) => entry.id !== task.id);
+      if (!task.events.length) deleteTaskRecords([task.id]);
       save(); render(); toast("本次日程已删除。");
     }
     if (button.matches(".delete-task")) {
       const task = state.tasks.find((item) => item.id === button.dataset.id);
-      if (task && confirm(`批量删除「${task.name}」整套共 ${task.events.length} 条关联日程？此操作无法撤销。`)) { state.tasks = state.tasks.filter((item) => item.id !== task.id); save(); render(); toast("整套日程已删除。"); }
+      if (task && confirm(`批量删除「${task.name}」整套共 ${task.events.length} 条关联日程？此操作无法撤销。`)) { deleteTaskRecords([task.id]); save(); render(); toast("整套日程已删除。"); }
     }
     if (button.matches(".delete-draft")) {
       const task = state.drafts.find((item) => item.id === button.dataset.id);
-      if (task && confirm(`删除草稿「${task.name}」？`)) { state.drafts = state.drafts.filter((item) => item.id !== task.id); save(); render(); toast("草稿已删除。"); }
+      if (task && confirm(`删除草稿「${task.name}」？`)) { state.drafts = state.drafts.filter((item) => item.id !== task.id); for (const child of [...state.tasks, ...state.drafts]) if (child.parentTaskId === task.id) child.parentTaskId = null; save(); render(); toast("草稿已删除。"); }
     }
     if (button.matches(".edit-category")) editCategory(button.dataset.id);
     if (button.matches(".delete-category")) deleteCategory(button.dataset.id);
   });
   document.addEventListener("change", (event) => {
+    if (event.target.matches(".task-search-check")) {
+      if (event.target.checked) selectedSearchTaskIds.add(event.target.dataset.id);
+      else selectedSearchTaskIds.delete(event.target.dataset.id);
+      $("#task-search-count").textContent = `找到 ${$("#task-search-results").querySelectorAll(".task-search-check").length} 条任务，已勾选 ${selectedSearchTaskIds.size} 条`;
+      $("#task-search-delete").disabled = selectedSearchTaskIds.size === 0;
+    }
     if (event.target.matches(".complete-check")) {
       const task = state.tasks.find((item) => item.id === event.target.dataset.taskId);
       const occurrence = task?.events.find((item) => item.id === event.target.dataset.eventId);
@@ -605,9 +680,18 @@
     if (event.target.matches("input[name='time-mode']")) updateTimeVisibility();
   });
   $("#new-task-button").addEventListener("click", () => openTask());
+  $("#task-search").addEventListener("input", () => { selectedSearchTaskIds.clear(); renderSearch(); });
+  $("#task-search-delete").addEventListener("click", () => {
+    const ids = [...selectedSearchTaskIds].filter((taskId) => state.tasks.some((task) => task.id === taskId));
+    if (!ids.length) return;
+    const occurrences = state.tasks.filter((task) => ids.includes(task.id)).reduce((total, task) => total + task.events.length, 0);
+    if (!confirm(`删除已勾选的 ${ids.length} 条任务及其 ${occurrences} 条关联日程？此操作无法撤销。父任务的子任务只有在单独勾选时才会删除。`)) return;
+    deleteTaskRecords(ids); save(); render(); toast(`已删除 ${ids.length} 条任务。`);
+  });
   $("#task-form").addEventListener("submit", submitTask);
   $("#save-draft").addEventListener("click", saveManualDraft);
   $("#task-repeat").addEventListener("change", updateRepeatVisibility);
+  $("#task-category").addEventListener("change", updateAllDayVisibility);
   $("#task-review").addEventListener("change", () => {
     if ($("#task-review").checked && $("#task-repeat").value !== "none") { $("#task-repeat").value = "none"; updateRepeatVisibility(); }
   });
@@ -669,141 +753,160 @@
     setTimeout(() => { layer.replaceChildren(); button.disabled = false; }, 3000);
   });
 
-  // 图片 OCR 与日程功能完全独立：文件直接交给 Tesseract.js 在浏览器 Web Worker 中识别。
-  function initOcr() {
-    const fileInput = $("#ocr-file"), cameraInput = $("#ocr-camera");
-    const startButton = $("#ocr-start"), copyButton = $("#ocr-copy");
-    const resultBox = $("#ocr-result"), preview = $("#ocr-preview");
-    const errorBox = $("#ocr-error"), status = $("#ocr-status");
-    const progress = $("#ocr-progress"), percent = $("#ocr-percent");
-    let selectedFile = null, previewUrl = null, selectionToken = 0, busy = false;
-    let libraryPromise = null;
-
-    function setProgress(value, label) {
-      const next = Math.max(Number(progress.value), Math.min(100, Math.round(value)));
-      progress.value = next;
-      percent.textContent = `${next}%`;
-      if (label) status.textContent = label;
+  // 将课表周次解析为实际周数；无法明确识别的内容留给用户在草稿中修正。
+  function parseCourseWeeks(raw) {
+    const text = raw.replace(/\s|第|周/g, "");
+    const odd = /单/.test(text), even = /双/.test(text);
+    if (odd && even) throw Error("上课周次不能同时标记单周和双周，请修正后重试。");
+    const clean = text.replace(/[()（）单双]/g, "");
+    const parts = clean.split(/[,，、;；]+/).filter(Boolean);
+    if (!parts.length) throw Error("请填写上课周次，例如 3-10周。");
+    const weeks = new Set();
+    for (const part of parts) {
+      const match = /^(\d{1,2})(?:[-~～至](\d{1,2}))?$/.exec(part);
+      if (!match) throw Error(`上课周次「${raw}」无法识别，请用 3-10周 或 3,5,7周 表示。`);
+      const start = Number(match[1]), end = Number(match[2] || match[1]);
+      if (start < 1 || end > 53 || end < start) throw Error("上课周次须在第 1–53 周内，且结束周不早于开始周。");
+      for (let week = start; week <= end; week++) if ((!odd || week % 2 === 1) && (!even || week % 2 === 0)) weeks.add(week);
     }
-    function clearError() { errorBox.textContent = ""; errorBox.hidden = true; }
-    function showError(message) { errorBox.textContent = message; errorBox.hidden = false; status.textContent = "识别未完成"; }
-    function setBusy(value) {
-      busy = value;
-      startButton.disabled = value;
-      fileInput.disabled = value;
-      cameraInput.disabled = value;
-      copyButton.disabled = value || !resultBox.value;
-    }
-
-    // 仅按需加载 CDN 脚本；语言包、WASM 和 worker 由 Tesseract.js 自行下载到浏览器。
-    function loadLibrary() {
-      if (window.Tesseract?.createWorker) return Promise.resolve(window.Tesseract);
-      if (!libraryPromise) libraryPromise = new Promise((resolve, reject) => {
-        const script = document.createElement("script");
-        script.src = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
-        script.async = true;
-        script.onload = () => {
-          if (window.Tesseract?.createWorker) resolve(window.Tesseract);
-          else { script.remove(); reject(Error("OCR 组件未正确加载。")); }
-        };
-        script.onerror = () => { script.remove(); reject(Error("OCR 组件下载失败，请检查网络后重试。")); };
-        document.head.appendChild(script);
-      }).catch((error) => { libraryPromise = null; throw error; });
-      return libraryPromise;
-    }
-
-    function chooseImage(file) {
-      if (busy || !file) return;
-      const token = ++selectionToken;
-      selectedFile = null;
-      resultBox.value = "";
-      copyButton.disabled = true;
-      progress.value = 0;
-      percent.textContent = "0%";
-      clearError();
-      if (previewUrl) URL.revokeObjectURL(previewUrl);
-      previewUrl = null;
-      preview.hidden = true;
-      preview.removeAttribute("src");
-      if (!file.type.startsWith("image/") || file.size === 0) {
-        $("#ocr-file-name").textContent = "尚未选择可用图片";
-        showError("请选择可正常打开的图片文件。" );
-        return;
-      }
-      $("#ocr-file-name").textContent = file.name || "手机拍摄的图片";
-      status.textContent = "正在读取图片…";
-      let url;
-      try { url = URL.createObjectURL(file); }
-      catch { showError("图片加载失败，请更换图片重试。"); return; }
-      const image = new Image();
-      image.onload = () => {
-        if (token !== selectionToken) { URL.revokeObjectURL(url); return; }
-        if (!image.naturalWidth || !image.naturalHeight) { URL.revokeObjectURL(url); showError("图片加载失败，请更换图片重试。" ); return; }
-        previewUrl = url;
-        preview.src = url;
-        preview.hidden = false;
-        selectedFile = file;
-        status.textContent = "图片已就绪，点击开始识别";
-      };
-      image.onerror = () => {
-        URL.revokeObjectURL(url);
-        if (token === selectionToken) showError("图片加载失败，文件可能损坏或浏览器不支持该格式。" );
-      };
-      image.src = url;
-    }
-    fileInput.addEventListener("change", () => chooseImage(fileInput.files?.[0]));
-    cameraInput.addEventListener("change", () => chooseImage(cameraInput.files?.[0]));
-
-    startButton.addEventListener("click", async () => {
-      if (busy) return;
-      clearError();
-      if (!selectedFile) { showError("请先选择图片或使用手机拍照。" ); return; }
-      if (typeof Worker === "undefined") { showError("当前浏览器不支持 Web Worker，无法进行本地图片识别。" ); return; }
-      resultBox.value = "";
-      setBusy(true);
-      progress.value = 0;
-      percent.textContent = "0%";
-      status.textContent = "正在加载 OCR 组件…";
-      let worker = null;
-      try {
-        const tesseract = await loadLibrary();
-        setProgress(5, "正在加载简体中文和英文语言包…");
-        worker = await tesseract.createWorker(["chi_sim", "eng"], 1, {
-          logger(message) {
-            const amount = Number.isFinite(message.progress) ? message.progress : 0;
-            if (message.status === "recognizing text") setProgress(25 + amount * 74, "正在识别文字…");
-            else setProgress(5 + amount * 20, "正在准备识别引擎与语言包…");
-          }
-        });
-        const output = await worker.recognize(selectedFile);
-        // 不修剪空白、不解析字段，完整保留 OCR 返回的原始文本。
-        resultBox.value = output.data.text ?? "";
-        setProgress(100, resultBox.value ? "识别完成" : "识别完成，但未检测到文字");
-      } catch (error) {
-        showError(`OCR 识别失败：${error.message || "请更换图片或检查网络后重试。"}`);
-      } finally {
-        if (worker) {
-          try { await worker.terminate(); } catch { /* Worker 退出异常不影响错误提示。 */ }
-        }
-        setBusy(false);
-      }
-    });
-
-    copyButton.addEventListener("click", async () => {
-      if (!resultBox.value) { showError("目前没有可复制的识别文字。" ); return; }
-      try {
-        if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(resultBox.value);
-        else { resultBox.select(); if (!document.execCommand("copy")) throw Error("复制失败"); }
-        toast("识别文字已复制。" );
-      } catch { showError("复制失败，请在文本框中手动选择文字复制。" ); }
-    });
+    if (!weeks.size) throw Error("指定的单双周范围内没有可生成的周次。");
+    return [...weeks].sort((a, b) => a - b);
   }
-  initOcr();
+
+  // 批量导入复用现有的每周生成器、课程节假日规则、冲突弹窗和持久化流程。
+  async function importAiCourses({ courses, termMonday, sectionTimes }) {
+    if (!window.QingxuAuth.isAuthenticated()) throw Error("请先登录，再批量导入课程。");
+    if (!courses.length) throw Error("请至少勾选一门课程。");
+    if (!isValidDate(termMonday) || new Date(dateValue(termMonday)).getUTCDay() !== 1) throw Error("请选择学期第 1 周的周一日期。");
+    const weekdayNames = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"];
+    const weekdayCodes = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"];
+    const courseCategory = state.categories.find((item) => item.name === "课程");
+    if (!courseCategory && state.categories.length >= 200) throw Error("分类数量已达上限，请先在设置中添加或整理「课程」分类。");
+    const category = courseCategory || { id: id(), name: "课程", color: "#74a896" };
+    const candidates = [];
+    for (const course of courses) {
+      const name = course.courseName.trim();
+      if (!name || name.length > 80) throw Error("请核对每门课程名称，名称不能留空且最多 80 字。");
+      const weekdayIndex = weekdayNames.indexOf(course.weekday);
+      if (weekdayIndex < 0) throw Error(`请为「${name}」选择星期。`);
+      const firstSection = course.sectionStart, lastSection = course.sectionEnd;
+      if (!Number.isInteger(firstSection) || !Number.isInteger(lastSection) || firstSection < 1 || lastSection > 50 || lastSection < firstSection) throw Error(`请核对「${name}」的开始、结束节次。`);
+      const startTime = sectionTimes[firstSection]?.start, endTime = sectionTimes[lastSection]?.end;
+      if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(startTime || "") || !/^([01]\d|2[0-3]):[0-5]\d$/.test(endTime || "")) throw Error(`请填写「${name}」第 ${firstSection} 节的开始时间和第 ${lastSection} 节的结束时间。`);
+      const duration = minutes(endTime) - minutes(startTime);
+      if (duration < 1 || duration > 1440) throw Error(`「${name}」的结束时间须晚于开始时间，且不能跨越午夜。`);
+      const weeks = parseCourseWeeks(course.weekRange.trim());
+      const firstDate = addDays(termMonday, (weeks[0] - 1) * 7 + weekdayIndex);
+      const lastDate = addDays(termMonday, (weeks.at(-1) - 1) * 7 + weekdayIndex);
+      const allowed = new Set(weeks.map((week) => addDays(termMonday, (week - 1) * 7 + weekdayIndex)));
+      const deletedOffsets = [];
+      for (let date = firstDate; date <= lastDate; date = addDays(date, 7)) if (!allowed.has(date)) deletedOffsets.push((dateValue(date) - dateValue(firstDate)) / 86400000);
+      const note = [`老师：${course.teacher || "未识别"}`, `教室：${course.location || "未识别"}`, `上课周次：${course.weekRange}`, `节次：${firstSection}-${lastSection}`].join("\n");
+      const candidate = { id: id(), name, categoryId: category.id, categoryName: category.name, date: firstDate, endDate: lastDate,
+        duration, reminder: 15, timeMode: "fixed", time: startTime, note, review: false,
+        recurrence: { type: "weekly", weekdays: [weekdayCodes[weekdayIndex]] }, deletedOffsets, events: [] };
+      // 与手动添加「课程」相同：涉及未配置节假日的年份时，请用户先到设置补充。
+      const years = new Set(weeks.map((week) => addDays(termMonday, (week - 1) * 7 + weekdayIndex).slice(0, 4)));
+      const missing = [...years].filter((year) => !state.settings.holidays.some((date) => date.startsWith(year)));
+      if (missing.length) throw Error(`「${name}」涉及 ${missing.join("、")} 年，但尚未配置这些年份的节假日。请先到设置页填写官方日期。`);
+      const generated = generateRecurringEvents(candidate);
+      candidate.events = generated.events;
+      if (!candidate.events.length) throw Error(`「${name}」的所有上课日期都被节假日规则跳过，请核对周次或设置。`);
+      candidates.push({ candidate, skipped: generated.skipped });
+    }
+    if (!courseCategory) state.categories.push(category);
+    let imported = 0, drafted = 0;
+    const skippedDates = new Set();
+    const importedDates = new Set();
+    for (const { candidate, skipped } of candidates) {
+      const conflicts = findConflicts(candidate);
+      const choice = conflicts.length ? await showConflict(conflicts, candidate) : "keep";
+      if (choice === "draft") { candidate.events = []; state.drafts.push(candidate); drafted++; }
+      else {
+        state.tasks.push(candidate); imported++;
+        skipped.forEach((date) => skippedDates.add(date));
+        candidate.events.forEach((event) => importedDates.add(event.date));
+      }
+    }
+    save();
+    const first = state.tasks.at(-1)?.events[0]?.date;
+    if (first) { selectedDate = first; displayedMonth = first.slice(0, 7); }
+    render(); showView(imported ? "plan" : "drafts"); window.QingxuAI.consume();
+    toast(`已生成 ${imported} 门课程，${drafted} 门课程已存入草稿箱。`);
+    if (skippedDates.size) await showNotice("已跳过法定节假日", `课程日程已跳过 ${skippedDates.size} 天：${[...skippedDates].slice(0, 20).join("、")}${skippedDates.size > 20 ? "等" : ""}。`);
+    if (overloadedDays().some((date) => importedDates.has(date))) await showNotice("时长提醒", "今天你的安排总时长已经超过16小时了！休息一下吧！");
+  }
+
+  // 父任务记录学习目标，选中的每个子任务各占一条任务记录；不改动复习节点生成器。
+  async function importAiPlan({ tasks, startDate, endDate, goal, preciseTime, reviewWholePlan }) {
+    if (!window.QingxuAuth.isAuthenticated()) throw Error("请先登录后导入规划。");
+    if (!tasks.length) throw Error("请至少选择一项任务。");
+    if (!goal?.trim() || goal.trim().length > 500) throw Error("学习目标不能为空，且不能超过 500 字。");
+    if (!isValidDate(startDate) || !isValidDate(endDate) || endDate < startDate) throw Error("请核对规划起止日期。");
+    const neededNames = ["全天", ...(preciseTime ? ["AI规划"] : [])];
+    const newCategories = neededNames.filter((name) => !state.categories.some((category) => category.name === name));
+    if (state.categories.length + newCategories.length > 200) throw Error("分类数量已达上限，请先整理分类。");
+    const categories = new Map(neededNames.map((name) => [name, state.categories.find((category) => category.name === name) ||
+      { id: id(), name, color: name === "全天" ? "#85aaa2" : "#7b9bb1" }]));
+    const parentCategory = categories.get("全天");
+    const parent = { id: id(), parentTaskId: null, name: goal.trim(), categoryId: parentCategory.id, categoryName: parentCategory.name,
+      date: startDate, endDate: reviewWholePlan ? addDays(startDate, Math.max(...state.settings.offsets)) : startDate,
+      duration: 1, reminder: 0, timeMode: "fixed", time: "00:00", allDay: true, planGroup: true,
+      note: `学习目标：${goal.trim()}`, review: Boolean(reviewWholePlan), recurrence: { type: "none", weekdays: [] },
+      deletedOffsets: [], draftForm: null, events: [] };
+    parent.events = generateEvents(parent).events;
+    const childCategory = categories.get(preciseTime ? "AI规划" : "全天");
+    const children = [];
+    for (const item of tasks) {
+      const name = item.taskName.trim(), date = item.date, duration = item.duration;
+      if (!name || name.length > 80) throw Error("AI 任务名称不能为空，且不能超过 80 字。");
+      if (!isValidDate(date) || date < startDate || date > endDate) throw Error(`请核对「${name}」的执行日期，须在规划起止日期内。`);
+      const time = preciseTime ? item.startTime : "00:00";
+      if (!Number.isInteger(duration) || duration < 1 || duration > 1440 || (preciseTime && (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time) || minutes(time) + duration > 1440))) throw Error(`请核对「${name}」的开始时间和时长，单项不能跨越午夜。`);
+      const note = [`子任务：${name}`, `阶段：${item.stageName || "未命名阶段"}`, `阶段时间：${item.timeRange || "未填写"}`,
+        `AI复习建议：${item.needReview ? "需要复习" : "普通任务"}`].join("\n");
+      const child = { id: id(), parentTaskId: parent.id, name, categoryId: childCategory.id, categoryName: childCategory.name,
+        date, endDate: date, duration: preciseTime ? duration : 1, reminder: preciseTime ? 15 : 0,
+        timeMode: "fixed", time, allDay: !preciseTime, planGroup: false, note, review: false,
+        recurrence: { type: "none", weekdays: [] }, deletedOffsets: [], draftForm: null, events: [] };
+      child.events = generateEvents(child).events;
+      children.push(child);
+    }
+    for (const name of newCategories) state.categories.push(categories.get(name));
+    state.tasks.push(parent);
+    let imported = 0, drafted = 0;
+    for (const child of children) {
+      const conflicts = findConflicts(child);
+      const choice = conflicts.length ? await showConflict(conflicts, child) : "keep";
+      if (choice === "draft") { child.events = []; state.drafts.push(child); drafted++; }
+      else { state.tasks.push(child); imported++; }
+    }
+    if (!save()) throw Error("保存失败，请检查浏览器存储空间或登录状态。");
+    selectedDate = startDate; displayedMonth = startDate.slice(0, 7);
+    render(); showView("plan");
+    toast(`已保存父任务和 ${imported} 项子任务${drafted ? `，${drafted} 项冲突子任务进入草稿箱` : ""}。`);
+    if (overloadedDays().some((date) => children.some((child) => child.events.some((event) => event.date === date)))) await showNotice("时长提醒", "今天你的安排总时长已经超过16小时了！休息一下吧！");
+  }
+
+  window.QingxuNotes.init();
+  window.QingxuPlan.init({
+    getCurrentTasks: ({ startDate, endDate }) => state.tasks.filter((task) =>
+      task.events.some((event) => !event.completed && event.date >= startDate && event.date <= endDate)
+    ).slice(0, 100).map((task) => ({ name: task.name, date: task.date, duration: task.duration, review: task.review })),
+    onImport: importAiPlan
+  });
+  window.QingxuAI.init({
+    onConfirm: importAiCourses
+  });
+
 
   window.QingxuAuth.boot({
     initialState,
     legacyLoader: loadState,
-    onState(data) { state = data; selectedDate = todayShanghai(); displayedMonth = selectedDate.slice(0, 7); render(); if (window.QingxuAuth.isAuthenticated()) showView("plan"); },
+    onState(data) { window.QingxuAI.reset(); window.QingxuPlan.reset(); window.QingxuNotes.accountChanged(window.QingxuAuth.isAuthenticated()); aiDraftInTaskForm = false; state = data; selectedSearchTaskIds.clear(); $("#task-search").value = "";
+      // 老账户原有分类中补上新的全天分类，不修改已有任务。
+      if (window.QingxuAuth.isAuthenticated() && !state.categories.some((category) => category.name === "全天") && state.categories.length < 200) { state.categories.push(clone(DEFAULT_CATEGORIES.at(-1))); save(); }
+      selectedDate = todayShanghai(); displayedMonth = selectedDate.slice(0, 7); render(); if (window.QingxuAuth.isAuthenticated()) showView("plan"); },
     onOffline(message) { toast(message || "当前离线，改动已保存在此设备，重新联网后会自动同步。"); }
   });
 })();

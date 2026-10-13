@@ -41,15 +41,15 @@ function patternMatches(task, date) {
 function typeLabel(event) { return event.round === 0 ? "初次学习" : `复习第${event.round}轮`; }
 function categoryName(task, categories) { return categories.find((cat) => cat.id === task.categoryId)?.name || task.categoryName || "未分类"; }
 function commonEventLines(task, category, stamp, uid, date, time) {
-  const end = endTime(date, time, task.duration);
+  const end = task.allDay ? null : endTime(date, time, task.duration);
   return ["BEGIN:VEVENT", `UID:${uid}@qingxu.local`, `DTSTAMP:${stamp}`,
-    `DTSTART;TZID=Asia/Shanghai:${compact(date, time)}`,
-    `DTEND;TZID=Asia/Shanghai:${compact(end.date, end.time)}`,
+    task.allDay ? `DTSTART;VALUE=DATE:${date.replace(/-/g, "")}` : `DTSTART;TZID=Asia/Shanghai:${compact(date, time)}`,
+    task.allDay ? `DTEND;VALUE=DATE:${addDays(date, 1).replace(/-/g, "")}` : `DTEND;TZID=Asia/Shanghai:${compact(end.date, end.time)}`,
     `SUMMARY:${escapeText(`【${category}】${task.name}`)}`,
     `CATEGORIES:${escapeText(category)}`];
 }
 function appendAlarm(lines, task, title) {
-  if (task.reminder > 0) lines.push("BEGIN:VALARM", "ACTION:DISPLAY", `DESCRIPTION:${escapeText(title)}`, `TRIGGER:-PT${task.reminder}M`, "END:VALARM");
+  if (!task.allDay && task.reminder > 0) lines.push("BEGIN:VALARM", "ACTION:DISPLAY", `DESCRIPTION:${escapeText(title)}`, `TRIGGER:-PT${task.reminder}M`, "END:VALARM");
 }
 function repeatedEvent(task, category, stamp) {
   // DTSTART 选规则内首日，即使该日被 EXDATE 排除，系列模式仍然保持定义明确。
@@ -71,9 +71,9 @@ function repeatedEvent(task, category, stamp) {
   if (repeat.type === "weekly") rule += `;BYDAY=${repeat.weekdays.join(",")}`;
   if (repeat.type === "monthly") rule += `;BYMONTHDAY=${Number(task.date.slice(8))}`;
   if (repeat.type === "yearly") rule += `;BYMONTH=${Number(task.date.slice(5, 7))};BYMONTHDAY=${Number(task.date.slice(8))}`;
-  rule += `;UNTIL=${untilUtc(task.endDate)}`;
+  rule += `;UNTIL=${task.allDay ? task.endDate.replace(/-/g, "") : untilUtc(task.endDate)}`;
   lines.push(`RRULE:${rule}`);
-  if (excluded.length) lines.push(`EXDATE;TZID=Asia/Shanghai:${excluded.map((date) => compact(date, time)).join(",")}`);
+  if (excluded.length) lines.push(task.allDay ? `EXDATE;VALUE=DATE:${excluded.map((date) => date.replace(/-/g, "")).join(",")}` : `EXDATE;TZID=Asia/Shanghai:${excluded.map((date) => compact(date, time)).join(",")}`);
   lines.push(`DESCRIPTION:${escapeText(task.note)}`);
   appendAlarm(lines, task, `【${category}】${task.name}`);
   lines.push("END:VEVENT");

@@ -27,7 +27,7 @@ async function main() {
   const port = await freePort();
   const historyFile = path.join(temp, "export_history.json");
   const child = spawn(process.execPath, [path.join(root, "server.js")], {
-    cwd: root, env: { ...process.env, PORT: String(port), QINGXU_DATA_DIR: path.join(temp, "data"), QINGXU_EXPORT_HISTORY_FILE: historyFile }, stdio: ["ignore", "pipe", "pipe"]
+    cwd: root, env: { ...process.env, PORT: String(port), DEEPSEEK_API_KEY: "", QINGXU_DATA_DIR: path.join(temp, "data"), QINGXU_EXPORT_HISTORY_FILE: historyFile }, stdio: ["ignore", "pipe", "pipe"]
   });
   let serverOutput = "";
   child.stdout.on("data", (chunk) => { serverOutput += chunk.toString(); });
@@ -49,16 +49,51 @@ async function main() {
     // 401 表示路由已注册且需要登录；404 则是本次实际遇到的旧进程问题。
     const unauthenticatedExport = await api("/api/export/ics", "POST");
     assert.equal(unauthenticatedExport.status, 401, "ICS 导出路由未注册或鉴权失效");
+    const unauthenticatedAi = await api("/api/ai/parse-schedule", "POST", { image: "无效图片" });
+    assert.equal(unauthenticatedAi.status, 401, "AI 图片接口必须校验登录状态");
+    assert.equal((await api("/api/notes")).status, 401, "便签接口必须校验登录状态");
+    assert.equal((await api("/api/ai-plan", "POST", {})).status, 401, "AI 规划接口必须校验登录状态");
     const registration = await api("/api/auth/register", "POST", { username: `smoke${Date.now()}`, password: "SmokeTest123!" });
     const registrationData = await registration.json();
     assert.equal(registration.status, 201, JSON.stringify(registrationData));
     token = registrationData.token;
+    assert.deepEqual(await (await api("/api/notes")).json(), [], "新账户的便签应为空");
+    const createdNoteResponse = await api("/api/notes", "POST", { content: "记住公式", side: "left" });
+    assert.equal(createdNoteResponse.status, 201);
+    const createdNote = await createdNoteResponse.json();
+    assert.equal(createdNote.content, "记住公式");
+    assert.equal((await api("/api/notes", "POST", { content: "空位置", side: "middle" })).status, 400);
+    assert.equal((await api("/api/notes", "POST", { content: "太长".repeat(126), side: "left" })).status, 400);
+    const updatedNote = await api(`/api/notes/${createdNote.id}`, "PUT", { content: "复习公式" });
+    assert.equal((await updatedNote.json()).content, "复习公式");
+    const noteOwnerToken = token;
+    const noteOtherRegistration = await api("/api/auth/register", "POST", { username: `note${Date.now()}`, password: "SmokeTest123!" });
+    assert.equal(noteOtherRegistration.status, 201);
+    token = (await noteOtherRegistration.json()).token;
+    assert.deepEqual(await (await api("/api/notes")).json(), [], "第二个账户不能读取第一个账户的便签");
+    assert.equal((await api(`/api/notes/${createdNote.id}`, "PUT", { content: "越权编辑" })).status, 404);
+    assert.equal((await api(`/api/notes/${createdNote.id}`, "DELETE")).status, 404);
+    token = noteOwnerToken;
+    assert.equal((await api(`/api/notes/${createdNote.id}`, "DELETE")).status, 200);
+    assert.deepEqual(await (await api("/api/notes")).json(), []);
+    const retainedNote = await (await api("/api/notes", "POST", { content: "保留在左侧", side: "left" })).json();
+    assert.equal((await api("/api/ai-plan", "POST", { goal: "学高数", startDate: "2026-10-12", endDate: "2026-11-12", background: "基础一般", currentTasks: [], preciseTime: false, preferredWindow: "上午" })).status, 503, "未配置密钥时规划接口应返回明确提示");
+    const invalidAiImage = await api("/api/ai/parse-schedule", "POST", { image: "无效图片" });
+    assert.equal(invalidAiImage.status, 400, "AI 图片接口应拒绝无效文件");
+    const tinyPng = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL/nwAAAABJRU5ErkJggg==";
+    const unconfiguredAi = await api("/api/ai/parse-schedule", "POST", { image: tinyPng });
+    assert.equal(unconfiguredAi.status, 503, "未配置 API Key 时应返回可理解的提示，且不调用模型");
+    const afterAi = await (await api("/api/sync")).json();
+    assert.deepEqual(afterAi.tasks, [], "图片解析接口不能自动保存日程");
     const category = { id: "reading", name: "阅读", color: "#a48eb8" };
     const repeat = { id: "repeat-1", categoryId: category.id, categoryName: category.name, name: "每天读书", date: "2026-10-10", endDate: "2026-10-12", duration: 30, reminder: 15, timeMode: "fixed", time: "09:00", note: "读十页", review: false, recurrence: { type: "daily", weekdays: [] }, deletedOffsets: [], draftForm: null, events: [0, 1, 2].map((offset) => ({ id: `repeat-event-${offset}`, offset, round: -1, date: addDays("2026-10-10", offset), time: "09:00", duration: 30, completed: false })) };
     const settings = { offsets: [0, 1, 2, 4, 7, 15, 30], defaultTime: "09:00", holidays: [] };
     let data = { categories: [category], settings, tasks: [repeat], drafts: [] };
     let response = await api("/api/sync", "PUT", data);
     assert.equal(response.status, 200, await response.text());
+    assert.deepEqual((await (await api("/api/notes")).json()).map((note) => note.id), [retainedNote.id], "任务快照同步不能清空独立便签表");
+    for (let index = 1; index < 30; index++) assert.equal((await api("/api/notes", "POST", { content: `便签${index}`, side: "left" })).status, 201);
+    assert.equal((await api("/api/notes", "POST", { content: "第31条", side: "left" })).status, 400, "单用户最多 30 条便签");
     response = await api("/api/export/ics", "POST");
     assert.equal(response.status, 200);
     assert.match(response.headers.get("content-type") || "", /^text\/calendar; charset=utf-8/i);
@@ -77,6 +112,38 @@ async function main() {
     assert.match(makeICS({ categories: [category], tasks: [yearly] }), /RRULE:FREQ=YEARLY;BYMONTH=2;BYMONTHDAY=29;/);
     const deletedOnce = { ...repeat, events: [repeat.events[0], repeat.events[2]] };
     assert.match(makeICS({ categories: [category], tasks: [deletedOnce] }), /EXDATE;TZID=Asia\/Shanghai:20261011T090000/);
+    // 全天日程在 Apple Calendar 中必须使用 DATE 值，结束日期为不包含在内的次日。
+    const allDayCategory = { id: "all-day", name: "全天", color: "#85aaa2" };
+    const allDay = { ...repeat, id: "all-day-check", categoryId: allDayCategory.id, categoryName: allDayCategory.name,
+      name: "整天阅读", date: "2026-10-10", endDate: "2026-10-12", duration: 1, reminder: 0, time: "00:00", allDay: true,
+      events: [0, 1, 2].map((offset) => ({ id: `all-day-${offset}`, offset, round: -1, date: addDays("2026-10-10", offset), time: "00:00", duration: 1, completed: false })) };
+    const allDayICS = makeICS({ categories: [allDayCategory], tasks: [allDay] });
+    assert.match(allDayICS, /DTSTART;VALUE=DATE:20261010\r\nDTEND;VALUE=DATE:20261011/);
+    assert.match(allDayICS, /RRULE:FREQ=DAILY;UNTIL=20261012/);
+    assert.doesNotMatch(allDayICS, /DTSTART;TZID=Asia\/Shanghai|BEGIN:VALARM/);
+    const allDayReview = { ...allDay, id: "all-day-review", review: true, recurrence: { type: "none", weekdays: [] }, events: [
+      { ...allDay.events[0], round: 0 }, { ...allDay.events[1], round: 1 }] };
+    assert.equal((makeICS({ categories: [allDayCategory], tasks: [allDayReview] }).match(/BEGIN:VEVENT/g) || []).length, 2);
+    // AI 父任务与子任务是两条独立记录；子任务名称写在自己的备注里。
+    const group = { ...allDayReview, id: "group-check", name: "完成高数上册并掌握常见题型", planGroup: true, note: "学习目标：完成高数上册并掌握常见题型", parentTaskId: null };
+    const childTask = { ...allDayReview, id: "child-check", name: "复习极限", planGroup: false, review: false, parentTaskId: group.id,
+      note: "子任务：复习极限\n阶段：第一阶段", events: [{ ...allDayReview.events[0], id: "child-event-check" }] };
+    response = await api("/api/sync", "PUT", { categories: [category, allDayCategory], settings, tasks: [repeat, group, childTask], drafts: [] });
+    assert.equal(response.status, 200, await response.text());
+    const savedTasks = (await (await api("/api/sync")).json()).tasks;
+    const savedGroup = savedTasks.find((task) => task.id === "group-check");
+    const savedChild = savedTasks.find((task) => task.id === "child-check");
+    assert.equal(savedGroup.allDay, true);
+    assert.equal(savedGroup.planGroup, true);
+    assert.doesNotMatch(savedGroup.note, /复习极限/);
+    assert.equal(savedChild.parentTaskId, savedGroup.id);
+    assert.match(savedChild.note, /复习极限/);
+    assert.equal((await api("/api/tasks/group-check", "DELETE")).status, 200);
+    const afterParentDelete = (await (await api("/api/sync")).json()).tasks.find((task) => task.id === "child-check");
+    assert.equal(afterParentDelete.parentTaskId, null, "删除父任务不应删除独立子任务");
+    data = { categories: [category], settings, tasks: [repeat], drafts: [] };
+    response = await api("/api/sync", "PUT", data);
+    assert.equal(response.status, 200, await response.text());
     for (let attempt = 0; attempt < 20 && !fs.existsSync(historyFile); attempt++) await sleep(50);
     const history = JSON.parse(fs.readFileSync(historyFile, "utf8"));
     assert(Object.values(history.users).some((entry) => entry.exportedTaskIds.includes(repeat.id)));

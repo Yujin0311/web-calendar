@@ -19,7 +19,7 @@
 | `sessions` | `jti`, `user_id`, `expires_at`, `created_at` | JWT 会话与退出失效 |
 | `categories` | `id`, `user_id`, `name`, `color` | 用户独立分类 |
 | `user_settings` | `user_id`, `offsets_json`, `default_time`, `holidays_json` | 复习和节假日设置 |
-| `tasks` | `id`, `user_id`, `category_id`, `name`, `start_date`, `end_date`, `duration`, `reminder`, `time_mode`, `start_time`, `note`, `review`, `repeat_type`, `repeat_weekdays_json`, `deleted_offsets_json`, `draft_form_json`, `status` | 任务、重复设置、终止日期、单次删除记录与未填完的草稿原始表单 |
+| `tasks` | `id`, `user_id`, `category_id`, `name`, `start_date`, `end_date`, `duration`, `reminder`, `time_mode`, `start_time`, `note`, `review`, `all_day`, `plan_group`, `parent_task_id`, `repeat_type`, `repeat_weekdays_json`, `deleted_offsets_json`, `draft_form_json`, `status` | 任务、全天标记、AI 父子关联、重复设置和草稿 |
 | `occurrences` | `id`, `user_id`, `task_id`, `offset_days`, `round_number`, `event_date`, `start_time`, `duration`, `completed` | 每条独立日程，可单独删除 |
 
 所有任务表都带用户归属，API 按当前 JWT 用户查询或修改。前端使用 `localStorage` 中的用户专属缓存支持断网时继续查看和编辑，重新联网后同步。当前版本为单设备优先的最后写入覆盖模型，不提供多设备冲突合并。
@@ -45,6 +45,10 @@
 | GET | `/api/export/history` | 查看当前账户的 ICS 导出记录 |
 | POST | `/api/export/ics` | 仅导出未记录过的任务，成功响应后记入历史 |
 | DELETE | `/api/export/history` | 清空当前账户的 ICS 导出记录 |
+| POST | `/api/ai/parse-schedule` | 登录后提交课表图片 data URL，返回 `{ courses: [...], isValid }`；不写数据库 |
+| GET、POST | `/api/notes` | 列出、新增当前用户便签（最多 30 条） |
+| PUT、DELETE | `/api/notes/:id` | 编辑、删除当前用户便签（单条最多 250 字） |
+| POST | `/api/ai-plan` | 接收目标、日期、基础情况、是否精确到钟点及可选高效时间段；返回待确认规划 JSON |
 
 ## 苹果日历导入说明
 
@@ -61,3 +65,45 @@
 ## 本地验证
 
 在项目目录执行 `npm test`。自动冒烟测试会使用临时数据库和临时导出记录文件，不会修改真实账户；验证服务启动、每日/每周/每月/每年 RRULE、一个重复系列只含一个 VEVENT、艾宾浩斯七个独立节点、第二次导出为空、清空记录后重新完整导出。再执行 `npm start` 并访问 `http://localhost:3000` 检查页面交互。
+
+## 图片 AI 日程解析
+
+登录后打开「图片识别导入」，上传一张大学周课表 JPG、PNG、GIF 或 WebP 图片（不超过 6 MB），点击「AI 解析日程」。后端通过 OpenAI Node.js SDK 调用 DeepSeek `deepseek-flash` 视觉模型，30 秒超时，一次返回整张课表的课程数组。用户可逐项核对、修正、勾选课程，填写学期第 1 周的周一日期，以及相关节次的开始和结束时间，点击「确认并批量生成日程」后才写入数据库。课程按识别到的周次生成每周日程；缺失或无法辨认的日期、节次和周次需要人工补齐。图片会发送给 DeepSeek API，不会保存在本项目数据库中。
+
+1. 在 [DeepSeek 开放平台](https://platform.deepseek.com/)注册或登录，在平台的 API Keys 页面创建密钥。
+2. 本地开发：复制 `.env.example` 为项目根目录的 `.env`，把 `DEEPSEEK_API_KEY=` 后的占位文字替换成真实密钥。运行 `npm install`、`npm start`。`.env` 已在 `.gitignore` 中，请勿提交密钥。也可以直接在系统环境变量中设置 `DEEPSEEK_API_KEY`。
+3. Render 部署：打开对应 Web Service 的 **Environment → Environment Variables → Add Environment Variable**，键填 `DEEPSEEK_API_KEY`，值填真实密钥；另设 `HOST=0.0.0.0` 以允许 Render 代理访问，`PORT` 使用 Render 自动提供的值。保存并重新部署。不要把密钥写进代码或提交到 Git。
+
+原先的本地纯文本识别流程已移除。AI 解析结果可能有遗漏或误读，保存前请人工核对。未配置密钥时，其他手动日程功能仍可使用，图片解析会显示中文配置提示。
+
+## 随手便签与 AI 规划助手
+
+登录后，PC 页面左侧有随手便签栏，可新增、编辑和删除。每个账户最多 30 条，单条最多 250 字，前端和后端均校验。便签保存在 SQLite 的 `notes` 表，接口只使用 JWT 所属用户的 `user_id` 查询；旧数据中的右侧便签也统一显示在左侧。移动端暂不展示侧栏。便签不进入任务快照 `/api/sync`。
+
+「AI 规划助手」会将学习目标、起止日期、基础情况、当前任务摘要、是否需要精确到钟点和可选高效时间段发送给 DeepSeek。后端仅返回阶段和任务 JSON，不保存提问、回答或聊天历史。确认页可勾选部分或全部细分任务；导入后创建一条**父任务**，名称直接使用学习目标。每项勾选的子任务单独保存为任务记录，并把自身名称、阶段和 AI 复习建议写入自己的备注。父任务备注不堆放子任务列表，复习开关默认关闭，由用户在导入前手动勾选。删除父任务只解除子任务关联，不删除子任务。选择不精确到钟点时，日程使用「全天」分类，ICS 使用 `DTSTART;VALUE=DATE` 和次日 `DTEND;VALUE=DATE`；数据库内部用 `00:00` 占位，页面不显示钟点。放弃或退出时丢弃 AI 结果。
+
+主计划的每日任务区上方可搜索当前账户全部任务的名称、分类和备注。每条搜索结果对应一条任务记录，可多选后一次删除；删除前会显示影响的任务与日程数量。草稿不包含在主计划搜索结果中。
+
+旧数据库启动时自动执行下列幂等检查与迁移；新数据库的 `CREATE TABLE tasks` 已含对应字段：
+
+```sql
+ALTER TABLE tasks ADD COLUMN all_day INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tasks ADD COLUMN plan_group INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tasks ADD COLUMN parent_task_id TEXT;
+```
+
+新增数据库初始化语句位于 `server.js` 的 `db.exec` 建表区：
+
+```sql
+CREATE TABLE IF NOT EXISTS notes (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  content TEXT NOT NULL,
+  side TEXT NOT NULL CHECK(side IN ('left','right')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_notes_user_side ON notes(user_id, side, created_at);
+```
+
+路由挂在 `server.js` 已有鉴权中间件之后：`GET/POST /api/notes`、`PUT/DELETE /api/notes/:id` 位于 `/api/auth/me` 后；`POST /api/ai-plan` 位于图片解析路由后。所有新接口均使用现有 `auth` 中间件。

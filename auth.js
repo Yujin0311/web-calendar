@@ -128,6 +128,26 @@
       return { empty: false, text: await response.text() };
     },
     async clearExportHistory() { return request("/export/history", "DELETE"); },
+    // 便签使用独立 API，不混入任务快照；凭证始终由此模块附加。
+    listNotes() { return request("/notes"); },
+    createNote(content, side) { return request("/notes", "POST", { content, side }); },
+    updateNote(id, content) { return request(`/notes/${encodeURIComponent(id)}`, "PUT", { content }); },
+    deleteNote(id) { return request(`/notes/${encodeURIComponent(id)}`, "DELETE"); },
+    // 规划请求只返回一次性 JSON，不写入浏览器缓存。
+    requestAiPlan(input) { return request("/ai-plan", "POST", input); },
+    // 仅将本次图片的 data URL 交给受登录保护的解析接口，不写入本地任务缓存。
+    async parseScheduleFromImage(image, signal) {
+      if (!session?.token) throw Error("请先登录。");
+      const response = await fetch("/api/ai/parse-schedule", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.token}` },
+        body: JSON.stringify({ image }),
+        signal
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw Object.assign(new Error(result.error || `AI 解析失败（${response.status}）`), { status: response.status });
+      return result;
+    },
     // 先写入当前用户缓存，再依次同步到服务器。断网时保留待同步标记。
     save(data) {
       if (!session?.user?.id) return false;

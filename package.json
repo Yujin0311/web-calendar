@@ -3,16 +3,20 @@
   "version": "2.0.0",
   "private": true,
   "description": "个人任务规划与复习日程网站",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "test": "node tests/smoke.js"
+    "test": "node tests/smoke.js && node tests/deepseek-schedule.js && node tests/deepseek-plan.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
     "better-sqlite3": "^13.0.3",
+    "dotenv": "^18.0.7",
     "express": "^4.21.2",
-    "jsonwebtoken": "^9.0.2"
+    "jsonwebtoken": "^9.0.2",
+    "openai": "^7.32.0"
   }
 }

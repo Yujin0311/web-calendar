@@ -10,9 +10,15 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const { makeICS } = require("./ics-export");
+const { parseScheduleFromImage } = require("./services/deepseekSchedule");
+const { makeStudyPlan } = require("./services/deepseekPlan");
+
+// 本地开发读取 .env；Render 等部署环境直接提供同名环境变量。
+require("dotenv").config({ path: path.join(__dirname, ".env"), quiet: true });
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
+const HOST = process.env.HOST || "127.0.0.1";
 const DATA_DIR = process.env.QINGXU_DATA_DIR ? path.resolve(process.env.QINGXU_DATA_DIR) : path.join(__dirname, "data");
 const EXPORT_HISTORY_FILE = process.env.QINGXU_EXPORT_HISTORY_FILE ? path.resolve(process.env.QINGXU_EXPORT_HISTORY_FILE) : path.join(__dirname, "export_history.json");
 fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -66,6 +72,9 @@ CREATE TABLE IF NOT EXISTS tasks (
   start_time TEXT NOT NULL,
   note TEXT NOT NULL,
   review INTEGER NOT NULL,
+  all_day INTEGER NOT NULL DEFAULT 0,
+  plan_group INTEGER NOT NULL DEFAULT 0,
+  parent_task_id TEXT,
   deleted_offsets_json TEXT NOT NULL DEFAULT '[]',
   draft_form_json TEXT,
   repeat_type TEXT NOT NULL DEFAULT 'none',
@@ -89,14 +98,28 @@ CREATE TABLE IF NOT EXISTS occurrences (
   PRIMARY KEY(user_id, id),
   FOREIGN KEY(user_id, task_id) REFERENCES tasks(user_id, id) ON DELETE CASCADE
 );
+-- 随手便签独立于任务快照，同一账户只能访问自己的便签。
+CREATE TABLE IF NOT EXISTS notes (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  content TEXT NOT NULL,
+  side TEXT NOT NULL CHECK(side IN ('left','right')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_tasks_user_status ON tasks(user_id, status);
 CREATE INDEX IF NOT EXISTS idx_occurrences_user_date ON occurrences(user_id, event_date);
+CREATE INDEX IF NOT EXISTS idx_notes_user_side ON notes(user_id, side, created_at);
 `);
 // 已启动过早期第二版的本机数据库也补上“单条删除”的持久记录。
 if (!db.prepare("PRAGMA table_info(tasks)").all().some((column) => column.name === "deleted_offsets_json")) db.exec("ALTER TABLE tasks ADD COLUMN deleted_offsets_json TEXT NOT NULL DEFAULT '[]'");
 if (!db.prepare("PRAGMA table_info(tasks)").all().some((column) => column.name === "draft_form_json")) db.exec("ALTER TABLE tasks ADD COLUMN draft_form_json TEXT");
 if (!db.prepare("PRAGMA table_info(tasks)").all().some((column) => column.name === "repeat_type")) db.exec("ALTER TABLE tasks ADD COLUMN repeat_type TEXT NOT NULL DEFAULT 'none'");
 if (!db.prepare("PRAGMA table_info(tasks)").all().some((column) => column.name === "repeat_weekdays_json")) db.exec("ALTER TABLE tasks ADD COLUMN repeat_weekdays_json TEXT NOT NULL DEFAULT '[]'");
+// 兼容已有数据库；全天与 AI 整套计划仅增加标记，不改旧字段与复习数据。
+if (!db.prepare("PRAGMA table_info(tasks)").all().some((column) => column.name === "all_day")) db.exec("ALTER TABLE tasks ADD COLUMN all_day INTEGER NOT NULL DEFAULT 0");
+if (!db.prepare("PRAGMA table_info(tasks)").all().some((column) => column.name === "plan_group")) db.exec("ALTER TABLE tasks ADD COLUMN plan_group INTEGER NOT NULL DEFAULT 0");
+if (!db.prepare("PRAGMA table_info(tasks)").all().some((column) => column.name === "parent_task_id")) db.exec("ALTER TABLE tasks ADD COLUMN parent_task_id TEXT");
 
 app.disable("x-powered-by");
 app.use(express.json({ limit: "10mb" }));
@@ -168,6 +191,34 @@ app.get("/api/auth/me", auth, (req, res) => {
   res.json({ user });
 });
 
+// 便签不进入 /api/sync 的任务快照；每条查询都带 JWT 解析出的 user_id。
+app.get("/api/notes", auth, (req, res) => {
+  res.json(db.prepare("SELECT id,content,side,created_at,updated_at FROM notes WHERE user_id = ? ORDER BY created_at, rowid").all(req.userId));
+});
+app.post("/api/notes", auth, (req, res) => {
+  const content = typeof req.body?.content === "string" ? req.body.content.trim() : "";
+  const side = req.body?.side;
+  if (!content || [...content].length > 250) return fail(res, 400, "便签内容须为 1–250 个字符。");
+  if (side !== "left") return fail(res, 400, "便签只支持左侧栏。");
+  if (db.prepare("SELECT COUNT(*) AS total FROM notes WHERE user_id = ?").get(req.userId).total >= 30) return fail(res, 400, "每个账户最多保存 30 条便签。");
+  const note = { id: newId(), content, side, created_at: now(), updated_at: now() };
+  db.prepare("INSERT INTO notes(id,user_id,content,side,created_at,updated_at) VALUES(?,?,?,?,?,?)").run(note.id, req.userId, note.content, note.side, note.created_at, note.updated_at);
+  res.status(201).json(note);
+});
+app.put("/api/notes/:id", auth, (req, res) => {
+  const content = typeof req.body?.content === "string" ? req.body.content.trim() : "";
+  if (!content || [...content].length > 250) return fail(res, 400, "便签内容须为 1–250 个字符。");
+  const updatedAt = now();
+  const result = db.prepare("UPDATE notes SET content = ?, updated_at = ? WHERE id = ? AND user_id = ?").run(content, updatedAt, req.params.id, req.userId);
+  if (!result.changes) return fail(res, 404, "便签不存在。");
+  res.json(db.prepare("SELECT id,content,side,created_at,updated_at FROM notes WHERE id = ? AND user_id = ?").get(req.params.id, req.userId));
+});
+app.delete("/api/notes/:id", auth, (req, res) => {
+  const result = db.prepare("DELETE FROM notes WHERE id = ? AND user_id = ?").run(req.params.id, req.userId);
+  if (!result.changes) return fail(res, 404, "便签不存在。");
+  res.json({ ok: true });
+});
+
 function loadState(userId) {
   const categories = db.prepare("SELECT id,name,color FROM categories WHERE user_id = ? ORDER BY rowid").all(userId);
   const settingsRow = db.prepare("SELECT * FROM user_settings WHERE user_id = ?").get(userId);
@@ -181,7 +232,7 @@ function loadState(userId) {
   }
   const tasks = [], drafts = [];
   for (const row of rows) {
-    const task = { id: row.id, categoryId: row.category_id, categoryName: row.category_name, name: row.name, date: row.start_date, endDate: row.end_date || "", duration: row.duration, reminder: row.reminder, timeMode: row.time_mode, time: row.start_time, note: row.note, review: Boolean(row.review), recurrence: { type: row.repeat_type || "none", weekdays: JSON.parse(row.repeat_weekdays_json || "[]") }, deletedOffsets: JSON.parse(row.deleted_offsets_json || "[]"), draftForm: row.draft_form_json ? JSON.parse(row.draft_form_json) : null, events: byTask.get(row.id) || [] };
+    const task = { id: row.id, categoryId: row.category_id, categoryName: row.category_name, name: row.name, date: row.start_date, endDate: row.end_date || "", duration: row.duration, reminder: row.reminder, timeMode: row.time_mode, time: row.start_time, note: row.note, review: Boolean(row.review), allDay: Boolean(row.all_day), planGroup: Boolean(row.plan_group), parentTaskId: row.parent_task_id || null, recurrence: { type: row.repeat_type || "none", weekdays: JSON.parse(row.repeat_weekdays_json || "[]") }, deletedOffsets: JSON.parse(row.deleted_offsets_json || "[]"), draftForm: row.draft_form_json ? JSON.parse(row.draft_form_json) : null, events: byTask.get(row.id) || [] };
     (row.status === "draft" ? drafts : tasks).push(task);
   }
   return { categories, tasks, drafts, settings };
@@ -204,13 +255,16 @@ function validateState(data) {
     taskIds.add(task.id);
     const repeat = task.recurrence || { type: "none", weekdays: [] };
     if (!["none", "daily", "weekly", "monthly", "yearly"].includes(repeat.type) || !Array.isArray(repeat.weekdays) || repeat.weekdays.some((day) => !["MO", "TU", "WE", "TH", "FR", "SA", "SU"].includes(day)) || new Set(repeat.weekdays).size !== repeat.weekdays.length || (repeat.type === "weekly" && !repeat.weekdays.length) || (repeat.type !== "weekly" && repeat.weekdays.length) || (repeat.type !== "none" && task.review)) throw Error("重复设置无效。");
-    if (!catIds.has(task.categoryId) || typeof task.name !== "string" || !task.name.trim() || task.name.length > 80 || !validDate(task.date) || (task.endDate && (!validDate(task.endDate) || task.endDate < task.date)) || !Number.isInteger(task.duration) || task.duration < 1 || task.duration > 1440 || ![0, 10, 15, 30].includes(task.reminder) || !["fixed", "default"].includes(task.timeMode) || !validTime(task.time) || typeof task.note !== "string" || task.note.length > 1000 || typeof task.review !== "boolean" || !Array.isArray(task.events) || task.events.length > 3700 || (task.deletedOffsets !== undefined && (!Array.isArray(task.deletedOffsets) || task.deletedOffsets.some((n) => !Number.isInteger(n) || n < 0 || n > 3650))) || (task.draftForm != null && (typeof task.draftForm !== "object" || JSON.stringify(task.draftForm).length > 3000))) throw Error("任务数据无效。");
+    if (!catIds.has(task.categoryId) || typeof task.name !== "string" || !task.name.trim() || task.name.length > (task.planGroup ? 500 : 80) || !validDate(task.date) || (task.endDate && (!validDate(task.endDate) || task.endDate < task.date)) || !Number.isInteger(task.duration) || task.duration < 1 || task.duration > 1440 || ![0, 10, 15, 30].includes(task.reminder) || !["fixed", "default"].includes(task.timeMode) || !validTime(task.time) || typeof task.note !== "string" || task.note.length > (task.planGroup ? 100000 : 1000) || typeof task.review !== "boolean" || (task.allDay !== undefined && typeof task.allDay !== "boolean") || (task.planGroup !== undefined && typeof task.planGroup !== "boolean") || (task.parentTaskId != null && (typeof task.parentTaskId !== "string" || !task.parentTaskId || task.parentTaskId.length > 100 || task.parentTaskId === task.id)) || !Array.isArray(task.events) || task.events.length > 3700 || (task.deletedOffsets !== undefined && (!Array.isArray(task.deletedOffsets) || task.deletedOffsets.some((n) => !Number.isInteger(n) || n < 0 || n > 3650))) || (task.draftForm != null && (typeof task.draftForm !== "object" || JSON.stringify(task.draftForm).length > 3000))) throw Error("任务数据无效。");
     if (repeat.type !== "none" && (!task.endDate || (Date.parse(`${task.endDate}T00:00:00Z`) - Date.parse(`${task.date}T00:00:00Z`)) / 86400000 > 3650)) throw Error("重复任务必须设置 10 年内的终止日期。");
     for (const event of task.events) {
       if (typeof event.id !== "string" || !event.id || event.id.length > 100 || occurrenceIds.has(event.id) || !Number.isInteger(event.offset) || event.offset < 0 || event.offset > 3650 || !Number.isInteger(event.round) || event.round < -1 || !validDate(event.date) || !validTime(event.time) || !Number.isInteger(event.duration) || event.duration < 1 || event.duration > 1440 || Number(event.time.slice(0, 2)) * 60 + Number(event.time.slice(3, 5)) + event.duration > 1440 || typeof event.completed !== "boolean") throw Error("日程数据无效。");
       occurrenceIds.add(event.id);
     }
   }
+  // 父子关联只允许指向本次同步数据内的同账户 AI 父任务。
+  const parents = new Set([...data.tasks, ...data.drafts].filter((task) => task.planGroup).map((task) => task.id));
+  if ([...data.tasks, ...data.drafts].some((task) => task.parentTaskId && !parents.has(task.parentTaskId))) throw Error("子任务的父任务不存在。");
 }
 
 const saveState = db.transaction((userId, data) => {
@@ -222,12 +276,12 @@ const saveState = db.transaction((userId, data) => {
   const insertCat = db.prepare("INSERT INTO categories(id,user_id,name,color) VALUES(?,?,?,?)");
   for (const cat of data.categories) insertCat.run(cat.id, userId, cat.name, cat.color);
   db.prepare("INSERT INTO user_settings(user_id,offsets_json,default_time,holidays_json) VALUES(?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET offsets_json=excluded.offsets_json,default_time=excluded.default_time,holidays_json=excluded.holidays_json").run(userId, JSON.stringify(data.settings.offsets), data.settings.defaultTime, JSON.stringify(data.settings.holidays));
-  const insertTask = db.prepare("INSERT INTO tasks(id,user_id,category_id,category_name,name,start_date,end_date,duration,reminder,time_mode,start_time,note,review,deleted_offsets_json,draft_form_json,repeat_type,repeat_weekdays_json,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+  const insertTask = db.prepare("INSERT INTO tasks(id,user_id,category_id,category_name,name,start_date,end_date,duration,reminder,time_mode,start_time,note,review,all_day,plan_group,parent_task_id,deleted_offsets_json,draft_form_json,repeat_type,repeat_weekdays_json,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
   const insertEvent = db.prepare("INSERT INTO occurrences(id,user_id,task_id,offset_days,round_number,event_date,start_time,duration,completed) VALUES(?,?,?,?,?,?,?,?,?)");
   const writtenAt = now();
   for (const [status, collection] of [["plan", data.tasks], ["draft", data.drafts]]) {
     for (const task of collection) {
-      insertTask.run(task.id, userId, task.categoryId, task.categoryName || "未分类", task.name, task.date, task.endDate || null, task.duration, task.reminder, task.timeMode, task.time, task.note, task.review ? 1 : 0, JSON.stringify(task.deletedOffsets || []), task.draftForm ? JSON.stringify(task.draftForm) : null, task.recurrence?.type || "none", JSON.stringify(task.recurrence?.weekdays || []), status, writtenAt, writtenAt);
+      insertTask.run(task.id, userId, task.categoryId, task.categoryName || "未分类", task.name, task.date, task.endDate || null, task.duration, task.reminder, task.timeMode, task.time, task.note, task.review ? 1 : 0, task.allDay ? 1 : 0, task.planGroup ? 1 : 0, task.parentTaskId || null, JSON.stringify(task.deletedOffsets || []), task.draftForm ? JSON.stringify(task.draftForm) : null, task.recurrence?.type || "none", JSON.stringify(task.recurrence?.weekdays || []), status, writtenAt, writtenAt);
       for (const event of task.events) insertEvent.run(event.id, userId, task.id, event.offset, event.round, event.date, event.time, event.duration, event.completed ? 1 : 0);
     }
   }
@@ -254,6 +308,57 @@ app.put("/api/sync", auth, (req, res) => {
   try { saveState(req.userId, req.body); res.json({ ok: true }); }
   catch (error) { res.status(400).json({ error: error.message || "同步失败。" }); }
 });
+  // AI 只返回完整课表课程数组；接口不读写任务表，前端确认后才批量保存。
+app.post("/api/ai/parse-schedule", auth, async (req, res) => {
+  try {
+    const timetable = await parseScheduleFromImage(req.body?.image);
+    res.json(timetable);
+  } catch (error) {
+    // 给前端有限长度的底层原因，完整原始内容只留在服务端控制台。
+    const detail = String(error.message || error.code || error.name || "未知错误").replace(/\s+/g, " ").slice(0, 200);
+    if (error.code === "INVALID_IMAGE") return fail(res, 400, error.message);
+    if (error.code === "CONFIG_MISSING") return fail(res, 503, "AI 图片解析暂不可用：服务器未配置 DEEPSEEK_API_KEY。");
+    if (error.code === "PARSE_FAILED") return fail(res, 422, detail);
+    console.error("DeepSeek 图片解析失败：", error.name, error.status || "", error.code || "", detail);
+    if (error.name === "APIConnectionTimeoutError" || error.code === "ETIMEDOUT") return fail(res, 504, `AI 解析超时（30 秒）：${detail}`);
+    if (error.status === 401 || error.status === 403) return fail(res, 502, `DeepSeek 授权失败：${detail}`);
+    if (error.status === 402) return fail(res, 503, `DeepSeek 账户余额不足：${detail}`);
+    if (error.status === 429) return fail(res, 503, `AI 服务请求过于频繁：${detail}`);
+    return fail(res, 502, `AI 服务暂时不可用：${detail}`);
+  }
+});
+// AI 规划接口只接收一次性输入并返回结构化 JSON，不保存对话或结果。
+app.post("/api/ai-plan", auth, async (req, res) => {
+  const goal = typeof req.body?.goal === "string" ? req.body.goal.trim() : "";
+  const background = typeof req.body?.background === "string" ? req.body.background.trim() : "";
+  const startDate = req.body?.startDate, endDate = req.body?.endDate;
+  const preciseTime = req.body?.preciseTime;
+  const preferredWindow = typeof req.body?.preferredWindow === "string" ? req.body.preferredWindow.trim() : "";
+  if (typeof preciseTime !== "boolean") return fail(res, 400, "请选择是否需要精确安排到几点。");
+  if (preferredWindow.length > 120) return fail(res, 400, "高效时间段最多填写 120 个字符。");
+  if (!goal || goal.length > 500) return fail(res, 400, "学习目标须为 1–500 个字符。");
+  if (background.length > 2000) return fail(res, 400, "基础情况最多填写 2000 个字符。");
+  if (!validDate(startDate) || !validDate(endDate) || endDate < startDate ||
+      (Date.parse(`${endDate}T00:00:00Z`) - Date.parse(`${startDate}T00:00:00Z`)) / 86400000 > 3650) {
+    return fail(res, 400, "请选择有效的起止日期，范围最多 10 年。");
+  }
+  const inputTasks = req.body?.currentTasks ?? [];
+  if (!Array.isArray(inputTasks) || inputTasks.length > 100 || inputTasks.some((task) => !task ||
+      typeof task.name !== "string" || task.name.length > 80 || !validDate(task.date) ||
+      !Number.isInteger(task.duration) || task.duration < 1 || task.duration > 1440 || typeof task.review !== "boolean")) {
+    return fail(res, 400, "现有任务摘要格式不正确。");
+  }
+  // 仅把完成规划所需的摘要发送给模型；忽略客户端传来的其他字段。
+  const currentTasks = inputTasks.map((task) => ({ name: task.name, date: task.date, duration: task.duration, review: task.review }));
+  try { res.json(await makeStudyPlan({ goal, startDate, endDate, background, currentTasks, preciseTime, preferredWindow })); }
+  catch (error) {
+    if (error.code === "CONFIG_MISSING") return fail(res, 503, "AI 规划暂不可用：服务器未配置 DEEPSEEK_API_KEY。");
+    if (error.code === "PLAN_PARSE_FAILED") return fail(res, 422, error.message);
+    if (error.name === "APIConnectionTimeoutError" || error.code === "ETIMEDOUT") return fail(res, 504, "AI 规划超时，请稍后重试。");
+    console.error("DeepSeek AI 规划失败：", error.name, error.status || "", error.code || "");
+    return fail(res, 502, "AI 规划服务暂时不可用，请稍后重试。");
+  }
+});
 app.get("/api/settings", auth, (req, res) => res.json(loadState(req.userId).settings));
 app.put("/api/settings", auth, withStateMutation((data, req) => { data.settings = req.body; return data.settings; }));
 app.get("/api/categories", auth, (req, res) => res.json(loadState(req.userId).categories));
@@ -264,9 +369,9 @@ app.get("/api/tasks", auth, (req, res) => { const data = loadState(req.userId); 
 app.post("/api/tasks", auth, withStateMutation((data, req) => { const task = { ...req.body, id: req.body.id || newId() }; (req.body.status === "draft" ? data.drafts : data.tasks).push(task); return task; }));
 app.put("/api/tasks/:id", auth, withStateMutation((data, req) => { const old = requireTask(data, req.params.id); data.tasks = data.tasks.filter((item) => item.id !== old.id); data.drafts = data.drafts.filter((item) => item.id !== old.id); const updated = { ...req.body, id: old.id }; (req.body.status === "draft" ? data.drafts : data.tasks).push(updated); return updated; }));
 app.post("/api/tasks/:id/draft", auth, withStateMutation((data, req) => { const task = requireTask(data, req.params.id); data.tasks = data.tasks.filter((item) => item.id !== task.id); task.events = []; data.drafts.push(task); return task; }));
-app.delete("/api/tasks/:id", auth, withStateMutation((data, req) => { requireTask(data, req.params.id); data.tasks = data.tasks.filter((item) => item.id !== req.params.id); data.drafts = data.drafts.filter((item) => item.id !== req.params.id); }));
+app.delete("/api/tasks/:id", auth, withStateMutation((data, req) => { requireTask(data, req.params.id); data.tasks = data.tasks.filter((item) => item.id !== req.params.id); data.drafts = data.drafts.filter((item) => item.id !== req.params.id); for (const child of [...data.tasks, ...data.drafts]) if (child.parentTaskId === req.params.id) child.parentTaskId = null; }));
 app.patch("/api/occurrences/:id", auth, withStateMutation((data, req) => { const event = [...data.tasks, ...data.drafts].flatMap((task) => task.events).find((item) => item.id === req.params.id); if (!event) throw Error("日程不存在。"); if (typeof req.body.completed !== "boolean") throw Error("完成状态无效。"); event.completed = req.body.completed; return event; }));
-app.delete("/api/occurrences/:id", auth, withStateMutation((data, req) => { for (const task of [...data.tasks, ...data.drafts]) { const target = task.events.find((event) => event.id === req.params.id); if (target) { task.events = task.events.filter((event) => event.id !== req.params.id); task.deletedOffsets = [...new Set([...(task.deletedOffsets || []), target.offset])]; if (!task.events.length) { data.tasks = data.tasks.filter((item) => item.id !== task.id); data.drafts = data.drafts.filter((item) => item.id !== task.id); } return; } } throw Error("日程不存在。"); }));
+app.delete("/api/occurrences/:id", auth, withStateMutation((data, req) => { for (const task of [...data.tasks, ...data.drafts]) { const target = task.events.find((event) => event.id === req.params.id); if (target) { task.events = task.events.filter((event) => event.id !== req.params.id); task.deletedOffsets = [...new Set([...(task.deletedOffsets || []), target.offset])]; if (!task.events.length) { data.tasks = data.tasks.filter((item) => item.id !== task.id); data.drafts = data.drafts.filter((item) => item.id !== task.id); for (const child of [...data.tasks, ...data.drafts]) if (child.parentTaskId === task.id) child.parentTaskId = null; } return; } } throw Error("日程不存在。"); }));
 
 // 增量导出历史统一保存在项目根目录，按用户 ID 分区，避免不同账户互相影响。
 function readExportHistory() {
@@ -331,7 +436,14 @@ app.get(["/login", "/register"], (req, res) => res.sendFile(path.join(__dirname,
 app.get("/style.css", (req, res) => res.sendFile(path.join(__dirname, "style.css")));
 app.get("/script.js", (req, res) => res.sendFile(path.join(__dirname, "script.js")));
 app.get("/auth.js", (req, res) => res.sendFile(path.join(__dirname, "auth.js")));
+app.get("/ai-schedule-client.js", (req, res) => res.sendFile(path.join(__dirname, "ai-schedule-client.js")));
+app.get("/notes-client.js", (req, res) => res.sendFile(path.join(__dirname, "notes-client.js")));
+app.get("/ai-plan-client.js", (req, res) => res.sendFile(path.join(__dirname, "ai-plan-client.js")));
 app.get("/upgrade.css", (req, res) => res.sendFile(path.join(__dirname, "upgrade.css")));
 app.use("/api", (req, res) => fail(res, 404, "接口不存在。"));
-app.use((error, req, res, next) => { console.error(error); fail(res, 500, "服务器内部错误。"); });
-app.listen(PORT, "127.0.0.1", () => console.log(`清序已启动：http://localhost:${PORT}`));
+app.use((error, req, res, next) => {
+  if (error.type === "entity.too.large") return fail(res, 413, "图片过大，请选择小于 6 MB 的图片。");
+  console.error(error);
+  fail(res, 500, "服务器内部错误。");
+});
+app.listen(PORT, HOST, () => console.log(`清序已启动：http://localhost:${PORT}`));
