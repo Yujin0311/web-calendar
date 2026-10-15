@@ -11,3 +11,12 @@ data/
 *.sqlite3-*
 export_history.json
 export_history.json.tmp
+
+# 部署相关（含服务器 IP、SSH 端口和用户名，切勿提交）
+DEPLOY.md
+check-server.ps1
+update-server.ps1
+qingxu.tar.gz
+qingxu-update.tar.gz
+
+data-backup/
