@@ -89,13 +89,15 @@ async function parseScheduleFromImage(base64Image) {
   validateImage(base64Image);
   const apiKey = process.env.DEEPSEEK_API_KEY?.trim();
   if (!apiKey) throw codedError("CONFIG_MISSING", "服务器尚未配置 DeepSeek API Key。");
-  // 禁用 SDK 自动重试，确保一次解析不会超过约 30 秒的请求超时。
-  const client = new OpenAI({ apiKey, baseURL: "https://api.deepseek.com", timeout: 30_000, maxRetries: 0 });
+  // 禁用 SDK 自动重试。高密度课表图片的 OCR + 推理 + 长 JSON 输出可能超过 60 秒，
+  // 超时设为 90 秒（须小于 nginx proxy_read_timeout 与 Cloudflare 100 秒限制）。
+  const client = new OpenAI({ apiKey, baseURL: "https://api.deepseek.com", timeout: 90_000, maxRetries: 0 });
   const response = await client.chat.completions.create({
     model: "deepseek-flash",
     response_format: { type: "json_object" },
-    // 整张周课表可能包含很多门课，预留足够的 JSON 输出空间。
-    max_tokens: 8192,
+    // deepseek-flash 的思考 token 也计入 max_tokens；密集课表的推理 + 完整课程 JSON
+    // 可能超过 8192 导致 finish_reason=length，因此放宽到 32768（API 实测接受）。
+    max_tokens: 32768,
     temperature: 0.1,
     messages: [
       { role: "system", content: SYSTEM_PROMPT },

@@ -122,7 +122,7 @@ body.signed-out .notes-sidebar { display: none !important; }
 .ai-plan-actions { display: flex; flex-wrap: wrap; gap: 9px; margin: 18px 0; }
 @media (max-width: 750px) { .ai-plan-task, .ai-plan-task-controls { grid-template-columns: 1fr; } .ai-plan-date-grid { grid-template-columns: 1fr; } }
 
-/* 右下角署名与无交互遮挡的三秒花瓣动画。 */
+/* 右下角署名与无交互遮挡的郁金香飘落动画。 */
 .app-shell { padding-bottom: 78px; } /* 页面底部留出空间，署名不会压住最后一行操作内容。 */
 .developer-credit { position: fixed; right: 14px; bottom: 13px; z-index: 20; display: flex; align-items: center; gap: 9px; max-width: 330px; padding: 9px 10px; background: #ffffffed; border: 1px solid #e8dfe8; border-radius: 13px; box-shadow: 0 5px 18px #284b6a18; }
 .developer-credit div { display: grid; gap: 3px; color: #755b71; font-size: .66rem; line-height: 1.4; pointer-events: none; }
@@ -131,8 +131,17 @@ body.signed-out .notes-sidebar { display: none !important; }
 .developer-credit button { flex: none; width: 35px; height: 35px; border: 0; border-radius: 50%; background: #fff0f7; font-size: 1.2rem; cursor: pointer; }
 .developer-credit button:hover { background: #fce0ed; }
 .petal-layer { position: fixed; inset: 0; overflow: hidden; pointer-events: none; z-index: 19; }
-.petal { position: absolute; top: -35px; left: var(--x); color: #e39fbd; font-size: var(--size); opacity: .7; text-shadow: 0 1px 3px #fff; will-change: transform; animation: petal-fall var(--duration) linear var(--delay) forwards; }
-@keyframes petal-fall { from { transform: translate3d(0, -20px, 0) rotate(0deg); opacity: 0; } 15% { opacity: .72; } to { transform: translate3d(var(--drift), 105vh, 0) rotate(var(--spin)); opacity: 0; } }
+.petal { position: absolute; top: -40px; left: var(--x); font-size: var(--size); line-height: 0; opacity: .9; will-change: transform; animation: petal-fall var(--duration) linear var(--delay) forwards; }
+.petal.tulip svg { display: block; width: 1em; height: 1em; filter: drop-shadow(0 1px 2px rgba(120,60,90,.28)); }
+/* 下落途中沿 --drift 左右来回偏移，形成轻微摇摆。 */
+@keyframes petal-fall {
+  0% { transform: translate3d(0, -24px, 0) rotate(0deg); opacity: 0; }
+  12% { opacity: .95; }
+  25% { transform: translate3d(calc(var(--drift) * .35), 24vh, 0) rotate(calc(var(--spin) * .25)); }
+  50% { transform: translate3d(calc(var(--drift) * -.25), 50vh, 0) rotate(calc(var(--spin) * .5)); }
+  75% { transform: translate3d(calc(var(--drift) * .35), 76vh, 0) rotate(calc(var(--spin) * .75)); }
+  100% { transform: translate3d(var(--drift), 106vh, 0) rotate(var(--spin)); opacity: 0; }
+}
 @media (prefers-reduced-motion: reduce) { .petal { animation: none; opacity: 0; } }
 
 @media (max-width: 700px) {

@@ -6,13 +6,24 @@
   <meta name="theme-color" content="#f7f9fc">
   <title>清序 · 学习与复习计划</title>
   <link rel="stylesheet" href="style.css">
-  <link rel="stylesheet" href="upgrade.css">
+  <link rel="stylesheet" href="upgrade.css?v=2">
   <style>[hidden]{display:none!important}</style>
   <script defer src="auth.js"></script>
-  <script defer src="ai-schedule-client.js"></script>
+  <script defer src="ai-schedule-client.js?v=2"></script>
   <script defer src="notes-client.js"></script>
   <script defer src="ai-plan-client.js"></script>
-  <script defer src="script.js"></script>
+  <script defer src="script.js?v=2"></script>
+  <style>
+    /* 开发者署名区块（含送花花与神秘链接）仅登录后显示；未登录完全隐藏。 */
+    body.signed-out .developer-credit,
+    body.signed-out .petal-layer,
+    body.signed-out .casper-link { display: none !important; }
+    /* 署名卡片改为纵向排列：文字、🌸 按钮、链接自上而下。 */
+    .developer-credit { flex-direction: column; align-items: center; gap: 8px; }
+    .casper-link { margin: 2px 0 0; text-align: center; }
+    .casper-link a { color: #9b6bd4; text-decoration: none; font-size: .85rem; border-bottom: 1px dashed #c9aee8; padding-bottom: 1px; }
+    .casper-link a:hover { color: #e0397b; border-bottom-color: #e0397b; }
+  </style>
 </head>
 <body class="signed-out">
   <div class="app-shell">
@@ -107,7 +118,7 @@
       </section>
       <section id="export-tutorial" class="panel export-tutorial"><h3>ICS 文件导入苹果日历教程</h3><p><strong>Mac 操作：</strong></p><ol><li>点击「下载 .ics 文件」，文件通常保存到浏览器的「下载」文件夹（Downloads）。</li><li>找到下载的 .ics 文件，双击打开；也可在「日历」App 中选「文件 → 导入」。</li><li>在苹果「日历」App 中选择要加入的日历，确认导入。需要独立日历时请先手动新建；本版不会自动创建。</li><li>如目标日历使用 iCloud，导入的日程会同步到登录同一 Apple 账户的 iPhone。</li></ol><p><strong>iPhone 操作：</strong></p><ol><li>在「文件」App 的下载项目中找到 .ics 文件，点开或使用「打开方式」，按设备提供的选项添加到日历。</li><li>若设备未提供导入选项，可在 Mac 上导入到 iCloud 日历，之后等待 iPhone 同步。</li></ol></section>
     </main>
-    <aside class="developer-credit" aria-label="开发者署名"><div><strong>此网站由聪明美丽的陈钰谨小姐和Codex开发</strong><span>如果你喜欢这个网站，请送个花花给我吧！</span></div><button id="flower-button" type="button" aria-label="送花花" title="送花花">🌸</button></aside>
+    <aside class="developer-credit" aria-label="开发者署名"><div><strong>此网站由聪明美丽的tulip小姐和Codex开发<br>同时感谢 Mr Casper 对本网站研发的大力支持。</strong><span>如果你喜欢这个网站，请送个花花给我吧！</span></div><button id="flower-button" type="button" aria-label="送花花" title="送花花">🌸</button><p class="casper-link"><a href="https://www.casperfeehily.pro" target="_blank" rel="noopener">这儿有个神秘的链接，绝对不是广告</a></p></aside>
     <div id="petal-layer" class="petal-layer" aria-hidden="true"></div>
     <footer>清序 · 账户数据保存在本机 SQLite，浏览器 localStorage 用作离线缓存。</footer>
   </div>

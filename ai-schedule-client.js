@@ -190,7 +190,8 @@ window.QingxuAI = (() => {
       const currentRequest = ++requestToken;
       const controller = new AbortController();
       activeController = controller;
-      const timer = setTimeout(() => controller.abort(), 35_000);
+      // 后端视觉解析超时上限 90 秒，这里留 5 秒余量后再中断。
+      const timer = setTimeout(() => controller.abort(), 95_000);
       try {
         const image = await readDataUrl(selectedFile);
         if (currentRequest !== requestToken) return;

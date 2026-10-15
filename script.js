@@ -736,21 +736,30 @@
     const button = $("#flower-button"), layer = $("#petal-layer");
     button.disabled = true;
     layer.replaceChildren();
-    const petals = document.createDocumentFragment();
-    for (let index = 0; index < 20; index++) {
+    // 郁金香五色：白色、浅粉、玫红、黄色、紫色。
+    const tulipColors = ["#fbf7fc", "#ffc2da", "#e0397b", "#ffd84d", "#9b6bd4"];
+    const tulipSvg = (color) => `<svg viewBox="0 0 24 32" width="1em" height="1em" aria-hidden="true">` +
+      `<path d="M12 15c-3.6 0-7.2-1.4-8-4.6C3.3 7.4 5 5.8 7 6.9 7 4 9.2 2 12 2s5 2 5 4.9c2-1.1 3.7.5 3 3.5-.8 3.2-4.4 4.6-8 4.6z" fill="${color}" stroke="rgba(90,40,60,.18)" stroke-width=".8"/>` +
+      `<path d="M12 15v13" stroke="#5a9e4f" stroke-width="2" stroke-linecap="round"/>` +
+      `<path d="M12 22c-3-.3-5.5-2-6.2-4.8C8.7 17.6 11 19 12 22z" fill="#6fae5c"/>` +
+      `<path d="M12 19c3-.3 5.5-2 6.2-4.8-2.9.4-5.2 1.8-6.2 4.8z" fill="#7fbd68"/>` +
+      `</svg>`;
+    const tulips = document.createDocumentFragment();
+    for (let index = 0; index < 48; index++) {
       const petal = document.createElement("span");
-      petal.className = "petal";
-      petal.textContent = "✿";
+      petal.className = "petal tulip";
+      petal.innerHTML = tulipSvg(tulipColors[Math.floor(Math.random() * tulipColors.length)]);
       petal.style.setProperty("--x", `${Math.random() * 100}%`);
-      petal.style.setProperty("--size", `${12 + Math.random() * 13}px`);
-      petal.style.setProperty("--drift", `${(Math.random() - .5) * 130}px`);
-      petal.style.setProperty("--spin", `${(Math.random() - .5) * 600}deg`);
-      petal.style.setProperty("--delay", `${Math.random() * .45}s`);
-      petal.style.setProperty("--duration", `${2.5 + Math.random() * .45}s`);
-      petals.appendChild(petal);
+      petal.style.setProperty("--size", `${16 + Math.random() * 16}px`);
+      petal.style.setProperty("--drift", `${(Math.random() - .5) * 160}px`);
+      petal.style.setProperty("--spin", `${(Math.random() - .5) * 540}deg`);
+      petal.style.setProperty("--delay", `${Math.random() * .9}s`);
+      petal.style.setProperty("--duration", `${2.8 + Math.random() * 1.2}s`);
+      tulips.appendChild(petal);
     }
-    layer.appendChild(petals);
-    setTimeout(() => { layer.replaceChildren(); button.disabled = false; }, 3000);
+    layer.appendChild(tulips);
+    // 最晚一朵：延迟 .9s + 时长 4s，5 秒后统一清理，避免 DOM 堆积。
+    setTimeout(() => { layer.replaceChildren(); button.disabled = false; }, 5000);
   });
 
   // 将课表周次解析为实际周数；无法明确识别的内容留给用户在草稿中修正。

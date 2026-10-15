@@ -412,11 +412,11 @@ app.post("/api/ai/parse-schedule", auth, async (req, res) => {
     if (error.code === "CONFIG_MISSING") return fail(res, 503, "AI 图片解析暂不可用：服务器未配置 DEEPSEEK_API_KEY。");
     if (error.code === "PARSE_FAILED") return fail(res, 422, detail);
     console.error("DeepSeek 图片解析失败：", error.name, error.status || "", error.code || "", detail);
-    if (error.name === "APIConnectionTimeoutError" || error.code === "ETIMEDOUT") return fail(res, 504, `AI 解析超时（30 秒）：${detail}`);
+    if (error.name === "APIConnectionTimeoutError" || error.message === "Request timed out." || error.code === "ETIMEDOUT") return fail(res, 504, `AI 解析超时（90 秒）：${detail}`);
     if (error.status === 401 || error.status === 403) return fail(res, 502, `DeepSeek 授权失败：${detail}`);
     if (error.status === 402) return fail(res, 503, `DeepSeek 账户余额不足：${detail}`);
     if (error.status === 429) return fail(res, 503, `AI 服务请求过于频繁：${detail}`);
-    return fail(res, 502, `AI 服务暂时不可用：${detail}`);
+    return fail(res, 502, `AI 服务暂时不可用（DeepSeek 状态码 ${error.status ?? "未知"}）：${detail}`);
   }
 });
 // AI 规划接口只接收一次性输入并返回结构化 JSON，不保存对话或结果。
