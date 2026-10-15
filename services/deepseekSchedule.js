@@ -1,6 +1,6 @@
 "use strict";
 
-// 本模块只负责向 DeepSeek 发出一次视觉请求并校验返回 JSON，不接触数据库。
+// 本模块只负责向阿里云百炼发出一次视觉请求并校验返回 JSON，不接触数据库。
 const OpenAI = require("openai");
 
 const SYSTEM_PROMPT = `你是大学课表提取助手。识别周课表图片，提取全部课程。
@@ -87,15 +87,15 @@ function validateSchedule(data) {
 
 async function parseScheduleFromImage(base64Image) {
   validateImage(base64Image);
-  const apiKey = process.env.DEEPSEEK_API_KEY?.trim();
-  if (!apiKey) throw codedError("CONFIG_MISSING", "服务器尚未配置 DeepSeek API Key。");
+  const apiKey = process.env.DASHSCOPE_API_KEY?.trim();
+  if (!apiKey) throw codedError("CONFIG_MISSING", "服务器尚未配置百炼 API Key。");
   // 禁用 SDK 自动重试。高密度课表图片的 OCR + 推理 + 长 JSON 输出可能超过 60 秒，
   // 超时设为 90 秒（须小于 nginx proxy_read_timeout 与 Cloudflare 100 秒限制）。
-  const client = new OpenAI({ apiKey, baseURL: "https://api.deepseek.com", timeout: 90_000, maxRetries: 0 });
+  const client = new OpenAI({ apiKey, baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1", timeout: 90_000, maxRetries: 0 });
   const response = await client.chat.completions.create({
-    model: "deepseek-flash",
+    model: "qwen3-vl-plus",
     response_format: { type: "json_object" },
-    // deepseek-flash 的思考 token 也计入 max_tokens；密集课表的推理 + 完整课程 JSON
+    // qwen3-vl-plus 的思考 token 也计入 max_tokens；密集课表的推理 + 完整课程 JSON
     // 可能超过 8192 导致 finish_reason=length，因此放宽到 32768（API 实测接受）。
     max_tokens: 32768,
     temperature: 0.1,
@@ -111,7 +111,7 @@ async function parseScheduleFromImage(base64Image) {
   const finishReason = response.choices?.[0]?.finish_reason ?? "未知";
   const usage = response.usage ?? null;
   // 调试日志只写在 npm start 的后端控制台，不把原始识别文本或图片回传到错误响应。
-  console.log("===== DeepSeek原始返回 =====");
+  console.log("===== qwen3-vl-plus原始返回 =====");
   console.log(rawContent);
   console.log("finish_reason:", finishReason);
   console.log("usage token用量：", usage);
