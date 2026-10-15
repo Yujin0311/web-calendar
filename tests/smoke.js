@@ -28,7 +28,9 @@ async function main() {
   const historyFile = path.join(temp, "export_history.json");
   const child = spawn(process.execPath, [path.join(root, "server.js")], {
     // REGISTER_MAX_ATTEMPTS 临时调高：冒烟测试要连续注册多个账户，不测试限流路径。
-    cwd: root, env: { ...process.env, PORT: String(port), DEEPSEEK_API_KEY: "", QINGXU_DATA_DIR: path.join(temp, "data"), QINGXU_EXPORT_HISTORY_FILE: historyFile, REGISTER_MAX_ATTEMPTS: "1000" }, stdio: ["ignore", "pipe", "pipe"]
+    // DASHSCOPE_API_KEY / DEEPSEEK_API_KEY 显式置空：dotenv 不覆盖已存在的环境变量，
+    // 否则子进程会从 .env 读到真实密钥，未配置密钥的断言就测不到。
+    cwd: root, env: { ...process.env, PORT: String(port), DEEPSEEK_API_KEY: "", DASHSCOPE_API_KEY: "", QINGXU_DATA_DIR: path.join(temp, "data"), QINGXU_EXPORT_HISTORY_FILE: historyFile, REGISTER_MAX_ATTEMPTS: "1000" }, stdio: ["ignore", "pipe", "pipe"]
   });
   let serverOutput = "";
   child.stdout.on("data", (chunk) => { serverOutput += chunk.toString(); });

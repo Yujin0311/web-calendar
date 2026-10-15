@@ -11,8 +11,9 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { makeICS } = require("./ics-export");
 const { cleanExpiredSessions } = require("./session-cleanup");
-const { parseScheduleFromImage } = require("./services/deepseekSchedule");
-const { makeStudyPlan } = require("./services/deepseekPlan");
+// AI 规划助手与图片课表识别都在 deepseekSchedule 中：规划走 DeepSeek chat completions，
+// 图片识别走百炼 qwen3-vl-plus 视觉模型。
+const { makeStudyPlan, parseScheduleFromImage } = require("./services/deepseekSchedule");
 
 // 本地开发读取 .env；Render 等部署环境直接提供同名环境变量。
 require("dotenv").config({ path: path.join(__dirname, ".env"), quiet: true });
@@ -409,7 +410,7 @@ app.post("/api/ai/parse-schedule", auth, async (req, res) => {
     // 给前端有限长度的底层原因，完整原始内容只留在服务端控制台。
     const detail = String(error.message || error.code || error.name || "未知错误").replace(/\s+/g, " ").slice(0, 200);
     if (error.code === "INVALID_IMAGE") return fail(res, 400, error.message);
-    if (error.code === "CONFIG_MISSING") return fail(res, 503, "AI 图片解析暂不可用：服务器未配置 DEEPSEEK_API_KEY。");
+    if (error.code === "CONFIG_MISSING") return fail(res, 503, "AI 图片解析暂不可用：服务器未配置 DASHSCOPE_API_KEY。");
     if (error.code === "PARSE_FAILED") return fail(res, 422, detail);
     console.error("DeepSeek 图片解析失败：", error.name, error.status || "", error.code || "", detail);
     if (error.name === "APIConnectionTimeoutError" || error.message === "Request timed out." || error.code === "ETIMEDOUT") return fail(res, 504, `AI 解析超时（90 秒）：${detail}`);
@@ -445,7 +446,7 @@ app.post("/api/ai-plan", auth, async (req, res) => {
   try { res.json(await makeStudyPlan({ goal, startDate, endDate, background, currentTasks, preciseTime, preferredWindow })); }
   catch (error) {
     if (error.code === "CONFIG_MISSING") return fail(res, 503, "AI 规划暂不可用：服务器未配置 DEEPSEEK_API_KEY。");
-    if (error.code === "PLAN_PARSE_FAILED") return fail(res, 422, error.message);
+    if (error.code === "PLAN_PARSE_FAILED" || error.code === "PARSE_FAILED") return fail(res, 422, error.message);
     if (error.name === "APIConnectionTimeoutError" || error.code === "ETIMEDOUT") return fail(res, 504, "AI 规划超时，请稍后重试。");
     console.error("DeepSeek AI 规划失败：", error.name, error.status || "", error.code || "");
     return fail(res, 502, "AI 规划服务暂时不可用，请稍后重试。");

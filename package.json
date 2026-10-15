@@ -11,7 +11,7 @@
     "dev": "node server.js",
     "invite": "node scripts/admin.js invite",
     "clean-sessions": "node scripts/admin.js session clean",
-    "test": "node tests/smoke.js && node tests/deepseek-schedule.js && node tests/deepseek-plan.js"
+    "test": "node tests/smoke.js && node tests/deepseek-schedule.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
