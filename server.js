@@ -14,7 +14,7 @@ const { cleanExpiredSessions } = require("./session-cleanup");
 const { defaultTimetable, validateTimetable, normalizeTimetable } = require("./timetable");
 // AI 规划助手与图片课表识别都在 deepseekSchedule 中：规划走 DeepSeek chat completions，
 // 图片识别走百炼 qwen3-vl-plus 视觉模型。
-const { makeStudyPlan, parseScheduleFromImage } = require("./services/deepseekSchedule");
+const { makeStudyPlan, parseScheduleFromImage, densityTarget } = require("./services/deepseekSchedule");
 
 // 本地开发读取 .env；Render 等部署环境直接提供同名环境变量。
 require("dotenv").config({ path: path.join(__dirname, ".env"), quiet: true });
@@ -435,6 +435,8 @@ app.post("/api/ai-plan", auth, async (req, res) => {
   const background = typeof req.body?.background === "string" ? req.body.background.trim() : "";
   const startDate = req.body?.startDate, endDate = req.body?.endDate;
   const preciseTime = req.body?.preciseTime;
+  const density = req.body?.density === undefined ? "medium" : req.body.density;
+  if (!["light", "medium", "busy"].includes(density)) return fail(res, 400, "任务密度取值无效。");
   const preferredWindow = typeof req.body?.preferredWindow === "string" ? req.body.preferredWindow.trim() : "";
   if (typeof preciseTime !== "boolean") return fail(res, 400, "请选择是否需要精确安排到几点。");
   if (preferredWindow.length > 120) return fail(res, 400, "高效时间段最多填写 120 个字符。");
@@ -445,14 +447,19 @@ app.post("/api/ai-plan", auth, async (req, res) => {
     return fail(res, 400, "请选择有效的起止日期，范围最多 10 年。");
   }
   const inputTasks = req.body?.currentTasks ?? [];
-  if (!Array.isArray(inputTasks) || inputTasks.length > 100 || inputTasks.some((task) => !task ||
-      typeof task.name !== "string" || task.name.length > 80 || !validDate(task.date) ||
-      !Number.isInteger(task.duration) || task.duration < 1 || task.duration > 1440 || typeof task.review !== "boolean")) {
+  if (!Array.isArray(inputTasks) || inputTasks.length > 200 || inputTasks.some((task) => !task ||
+      typeof task.name !== "string" || task.name.length > 40 || !validDate(task.date) ||
+      typeof task.time !== "string" || !/^([01]\d|2[0-3]):[0-5]\d$/.test(task.time) ||
+      (task.allDay !== undefined && typeof task.allDay !== "boolean") ||
+      !Number.isInteger(task.duration) || task.duration < 1 || task.duration > 1440 ||
+      Number(task.time.slice(0, 2)) * 60 + Number(task.time.slice(3)) + task.duration > 1440 || typeof task.review !== "boolean")) {
     return fail(res, 400, "现有任务摘要格式不正确。");
   }
   // 仅把完成规划所需的摘要发送给模型；忽略客户端传来的其他字段。
-  const currentTasks = inputTasks.map((task) => ({ name: task.name, date: task.date, duration: task.duration, review: task.review }));
-  try { res.json(await makeStudyPlan({ goal, startDate, endDate, background, currentTasks, preciseTime, preferredWindow })); }
+  const currentTasks = inputTasks.map((task) => ({ name: task.name, date: task.date, time: task.time, duration: task.duration, allDay: task.allDay ?? false, review: task.review }));
+  const days = Math.round((Date.parse(`${endDate}T00:00:00Z`) - Date.parse(`${startDate}T00:00:00Z`)) / 86400000) + 1;
+  console.log(`[ai-plan] density=${density}, currentTasks=${currentTasks.length}条, target=${densityTarget(days, density)}`);
+  try { res.json(await makeStudyPlan({ goal, startDate, endDate, background, currentTasks, preciseTime, preferredWindow, density })); }
   catch (error) {
     if (error.code === "CONFIG_MISSING") return fail(res, 503, "AI 规划暂不可用：服务器未配置 DEEPSEEK_API_KEY。");
     if (error.code === "PLAN_PARSE_FAILED" || error.code === "PARSE_FAILED") return fail(res, 422, error.message);

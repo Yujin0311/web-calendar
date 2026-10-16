@@ -5,12 +5,15 @@ window.QingxuPlan = (() => {
   const $ = (selector) => document.querySelector(selector);
   let result = null, busy = false, requestVersion = 0;
   let resultPrecise = false, resultGoal = "";
+  const densities = ["light", "medium", "busy"];
+  const densityLabels = ["轻松 · 每周 1–2 个子任务", "中度 · 每 2 天 1 个子任务", "忙碌 · 每天 1 个子任务"];
+  function updateDensity() { $("#ai-plan-density-value").textContent = densityLabels[Number($("#ai-plan-density").value)]; }
 
   function error(message) { $("#ai-plan-error").textContent = message; $("#ai-plan-error").hidden = !message; }
   function setBusy(value) {
     busy = value;
     for (const id of ["ai-plan-generate", "ai-plan-import-selected", "ai-plan-import-all"]) $("#" + id).disabled = value;
-    for (const control of [...document.querySelectorAll('input[name="ai-plan-precise"]'), $("#ai-plan-preferred-window")]) control.disabled = value;
+    for (const control of [...document.querySelectorAll('input[name="ai-plan-precise"]'), $("#ai-plan-preferred-window"), $("#ai-plan-density")]) control.disabled = value;
   }
   function reset() {
     requestVersion++;
@@ -20,6 +23,7 @@ window.QingxuPlan = (() => {
     $("#ai-plan-result").hidden = true;
     $("#ai-plan-stages").replaceChildren();
     $("#ai-plan-form").reset();
+    updateDensity();
     $("#ai-plan-status").textContent = "";
     error(""); setBusy(false);
   }
@@ -76,7 +80,8 @@ window.QingxuPlan = (() => {
       error("");
       const input = { goal: $("#ai-plan-goal").value.trim(), startDate: $("#ai-plan-start").value,
         endDate: $("#ai-plan-end").value, background: $("#ai-plan-background").value.trim(),
-        preciseTime: $("input[name='ai-plan-precise']:checked")?.value === "yes", preferredWindow: $("#ai-plan-preferred-window").value.trim() };
+        preciseTime: $("input[name='ai-plan-precise']:checked")?.value === "yes", preferredWindow: $("#ai-plan-preferred-window").value.trim(),
+        density: densities[Number($("#ai-plan-density").value)] };
       if (!input.goal || !input.startDate || !input.endDate || input.endDate < input.startDate) { error("请填写学习目标和有效的起止日期。"); return; }
       input.currentTasks = getCurrentTasks(input);
       result = null; $("#ai-plan-result").hidden = true; setBusy(true);
@@ -103,9 +108,10 @@ window.QingxuPlan = (() => {
       });
     }
     $("#ai-plan-discard").addEventListener("click", reset);
-    // 规划结果依赖用户选择的时间方式和高效时间段，改动后需要重新生成。
-    for (const control of [...document.querySelectorAll('input[name="ai-plan-precise"]'), $("#ai-plan-preferred-window")]) {
-      control.addEventListener("change", () => { if (result) { result = null; $("#ai-plan-result").hidden = true; $("#ai-plan-status").textContent = "时间偏好已更改，请重新生成规划。"; } });
+    $("#ai-plan-density").addEventListener("input", updateDensity);
+    // 时间偏好或密度变化后，旧规划须重新生成。
+    for (const control of [...document.querySelectorAll('input[name="ai-plan-precise"]'), $("#ai-plan-preferred-window"), $("#ai-plan-density")]) {
+      control.addEventListener("change", () => { updateDensity(); if (result) { result = null; $("#ai-plan-result").hidden = true; $("#ai-plan-stages").replaceChildren(); $("#ai-plan-status").textContent = control.id === "ai-plan-density" ? "任务密度已更改，请重新生成规划。" : "时间偏好已更改，请重新生成规划。"; } });
     }
   }
   return { init, reset };

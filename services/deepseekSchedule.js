@@ -34,10 +34,86 @@ const SYSTEM_PROMPT = `你是学习计划规划助手。请根据用户给出的
 5. 用户不需要精确到小时时（preciseTime=false），每个任务的 startTime 一律填空字符串""，这些日程会作为全天任务保存，只保留日期；
 6. 只输出上述JSON本体，不要输出空数组阶段，不要输出示例文字。`;
 
+const DENSITY_PROMPTS = {
+  light: "任务密度：轻松。整个规划期内每周只安排 1–2 个子任务，相邻子任务间隔约 3–5 天，总量按周数 × 1.5 估算，宁可少不要多。",
+  medium: "任务密度：中度。平均每 2 天安排 1 个子任务，总量按规划天数 ÷ 2 估算。",
+  busy: "任务密度：忙碌。每天安排 1 个子任务，总量约等于规划天数，仍须遵守 200 条上限。"
+};
+const CONFLICT_PROMPT = `用户消息会提供已占用时段清单（YYYY-MM-DD HH:mm–HH:mm 任务名，全天任务标注「全天」）。
+preciseTime=true 时，新任务时段 [startTime, startTime + duration) 不得与同一天任何已占用时段重叠，逐一比对；首尾相接不算冲突。新任务之间也不得重叠。
+严格遵循 preferredWindow，优先在用户填写的高效时间段内安排；若有冲突，在同一天该偏好时段附近寻找最近的空闲时段；当天确实排不下则顺延到规划范围内最近的有空日期。宁可减少任务数量，也不要安排重叠。
+全天任务表示该日已很满，不参与精确时段重叠判断。不要重排、不要输出用户已有的任务。
+preciseTime=false 时不要编造钟点，startTime 仍为空字符串；在日期上避开全天任务或当天任务总时长接近 16 小时的拥挤日期。
+不得改变输出 JSON 结构与字段。`;
+
 const PLAN_KEYS = ["planTitle", "stages"];
 const STAGE_KEYS = ["stageName", "tasks", "timeRange"];
 const TASK_KEYS = ["date", "duration", "needReview", "startTime", "taskName"];
 const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+function densityTarget(days, density) {
+  if (!Object.hasOwn(DENSITY_PROMPTS, density)) throw codedError("PARSE_FAILED", "任务密度取值无效。");
+  return Math.min(200, Math.max(1, density === "light" ? Math.round(days / 7 * 1.5) : density === "medium" ? Math.round(days / 2) : days));
+}
+
+function enforceDensity(plan, target) {
+  const count = plan.stages.reduce((total, stage) => total + stage.tasks.length, 0);
+  if (count < target) console.warn(`[ai-plan] 任务不足目标：actual=${count}, target=${target}，保留原计划，不补任务。`);
+  const keep = Math.max(target, plan.stages.length);
+  if (count <= keep) return plan;
+  const stages = plan.stages.map((stage) => ({ ...stage, tasks: [] }));
+  let index = 0, previousBucket = -1, selected = 0;
+  // 全局等距抽样；再补回被抽空的阶段，从任务最多的阶段扣回名额。
+  plan.stages.forEach((stage, stageIndex) => stage.tasks.forEach((task) => {
+    const bucket = Math.round(index++ * keep / count);
+    if (bucket !== previousBucket && selected < keep) { stages[stageIndex].tasks.push(task); selected++; }
+    previousBucket = bucket;
+  }));
+  stages.forEach((stage, stageIndex) => {
+    if (!stage.tasks.length) { stage.tasks.push(plan.stages[stageIndex].tasks[0]); selected++; }
+  });
+  while (selected > keep) {
+    const largest = stages.reduce((a, b) => a.tasks.length >= b.tasks.length ? a : b);
+    largest.tasks.pop(); selected--;
+  }
+  return { ...plan, stages };
+}
+
+function resolveConflicts(plan, occupied, { preciseTime, startDate, endDate }) {
+  if (preciseTime !== true) return plan;
+  const minutes = (time) => Number(time.slice(0, 2)) * 60 + Number(time.slice(3));
+  const clock = (value) => `${String(Math.floor(value / 60)).padStart(2, "0")}:${String(value % 60).padStart(2, "0")}`;
+  const addDays = (date, offset) => new Date(Date.parse(`${date}T00:00:00Z`) + offset * 86400000).toISOString().slice(0, 10);
+  const slots = new Map();
+  function reserve(date, start, duration) {
+    if (!slots.has(date)) slots.set(date, []);
+    slots.get(date).push([start, start + duration]);
+  }
+  for (const task of occupied) if (task.allDay === false) reserve(task.date, minutes(task.time), task.duration);
+  const result = { ...plan, stages: plan.stages.map((stage) => ({ ...stage, tasks: stage.tasks.map((task) => ({ ...task })) })) };
+  const tasks = result.stages.flatMap((stage) => stage.tasks).sort((a, b) => a.date.localeCompare(b.date) || a.startTime.localeCompare(b.startTime));
+  const offsets = [0];
+  for (let offset = 15; offset <= 360; offset += 15) offsets.push(offset, -offset);
+  for (const task of tasks) {
+    const originalStart = minutes(task.startTime);
+    const dates = [task.date];
+    for (let days = 1; days <= 14; days++) dates.push(addDays(task.date, days));
+    for (let days = 1; days <= 14; days++) dates.push(addDays(task.date, -days));
+    let found = false;
+    for (const date of dates) {
+      if (date < startDate || date > endDate) continue;
+      for (const offset of offsets) {
+        const start = originalStart + offset, end = start + task.duration;
+        if (start < 0 || end > 1440 || (slots.get(date) || []).some(([a, b]) => start < b && end > a)) continue;
+        task.date = date; task.startTime = clock(start); found = true; break;
+      }
+      if (found) break;
+    }
+    if (!found) console.warn(`[ai-plan] 无可用时段，保留原任务：${task.date} ${task.startTime} ${task.taskName}`);
+    reserve(task.date, minutes(task.startTime), task.duration);
+  }
+  return result;
+}
 
 function codedError(code, message) {
   const error = new Error(message);
@@ -116,11 +192,28 @@ function validateSchedule(data, startDate, endDate, preciseTime) {
   return { planTitle: data.planTitle.trim(), stages: normalizedStages };
 }
 
-function buildUserPrompt({ goal, startDate, endDate, background, currentTasks, preciseTime, preferredWindow }) {
+function buildUserPrompt({ goal, startDate, endDate, background, currentTasks, preciseTime, preferredWindow, density }) {
   let payload;
-  try { payload = JSON.stringify({ goal, startDate, endDate, background, currentTasks, preciseTime, preferredWindow }); }
+  try { payload = JSON.stringify({ goal, startDate, endDate, background, preciseTime, preferredWindow }); }
   catch { throw codedError("PARSE_FAILED", "规划输入无法序列化，请精简学习目标或基础情况后重试。"); }
-  return `本次规划输入：\n${payload}\n请只输出约定的 JSON 日程计划。`;
+  const grouped = new Map();
+  for (const task of [...currentTasks].sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time))) {
+    if (!grouped.has(task.date)) grouped.set(task.date, []);
+    grouped.get(task.date).push(task);
+  }
+  const occupied = [...grouped].map(([date, tasks]) => {
+    const timed = tasks.filter((task) => !task.allDay);
+    const hours = Math.round(timed.reduce((sum, task) => sum + task.duration, 0) / 60 * 100) / 100;
+    const lines = timed.map((task) => {
+      const end = Number(task.time.slice(0, 2)) * 60 + Number(task.time.slice(3)) + task.duration;
+      const endTime = `${String(Math.floor(end / 60)).padStart(2, "0")}:${String(end % 60).padStart(2, "0")}`;
+      return `${task.time}-${endTime} ${task.name}`;
+    });
+    return [`${date}（已占 ${hours} 小时）：${lines.join("；")}`, ...tasks.filter((task) => task.allDay).map((task) => `${date} 全天 ${task.name}`)].join("\n");
+  }).join("\n");
+  const days = Math.round((Date.parse(`${endDate}T00:00:00Z`) - Date.parse(`${startDate}T00:00:00Z`)) / 86400000) + 1;
+  const target = densityTarget(days, density);
+  return `本次规划输入：\n${payload}\n密度核算：${density}，起止日期含首尾共 ${days} 天，整份计划（全部阶段合计）的目标任务总数为 ${target} 个。任务总数不要超过此目标；有冲突可减少，不要为覆盖日期而加密任务。阶段日期范围覆盖整个规划期即可，不要求每天都有任务。\n已占用时段清单：\n${occupied || "（用户在该时间段内没有已安排的任务）"}\n请只输出约定的 JSON 日程计划。`;
 }
 
 // AI 规划助手入口：一次请求返回待确认的计划 JSON，不保存对话上下文。
@@ -130,10 +223,13 @@ function buildUserPrompt({ goal, startDate, endDate, background, currentTasks, p
 // 每条子任务把自身标题写入自己的备注；needReview 决定是否按艾宾浩斯节点生成复习日程；
 // preciseTime=false 时 startTime 为空字符串，任务按全天日程保存（只保留日期）。
 async function makeStudyPlan(input = {}) {
-  const { goal, startDate, endDate, background = "", currentTasks = [], preciseTime, preferredWindow = "" } = input;
+  const { goal, startDate, endDate, background = "", currentTasks = [], preciseTime, preferredWindow = "", density = "medium" } = input;
+  if (!Object.hasOwn(DENSITY_PROMPTS, density)) throw codedError("PARSE_FAILED", "任务密度取值无效。");
   if (typeof goal !== "string" || !goal.trim() || goal.trim().length > 500) throw codedError("PARSE_FAILED", "学习目标须为 1–500 个字符。");
   if (!validDate(startDate) || !validDate(endDate) || endDate < startDate) throw codedError("PARSE_FAILED", "请选择有效的起止日期。");
   if (typeof preciseTime !== "boolean") throw codedError("PARSE_FAILED", "请选择是否需要精确安排到几点。");
+  const target = densityTarget(Math.round((Date.parse(`${endDate}T00:00:00Z`) - Date.parse(`${startDate}T00:00:00Z`)) / 86400000) + 1, density);
+  console.log(currentTasks.length ? `[ai-plan] 占用清单非空：${currentTasks.length}条` : "[ai-plan] 占用清单为空");
   // 密钥为空时直接抛出，绝不发起网络请求；错误码与图片识别模块保持一致。
   const apiKey = process.env.DEEPSEEK_API_KEY?.trim();
   if (!apiKey) throw codedError("CONFIG_MISSING", CONFIG_MISSING_MESSAGE);
@@ -145,8 +241,8 @@ async function makeStudyPlan(input = {}) {
     max_tokens: MAX_TOKENS,
     temperature: 0.2,
     messages: [
-      { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content: buildUserPrompt({ goal: goal.trim(), startDate, endDate, background, currentTasks, preciseTime, preferredWindow }) }
+      { role: "system", content: `${SYSTEM_PROMPT}\n${DENSITY_PROMPTS[density]}\n任务数量与日期分布必须符合所选密度；阶段（stages）数量不得超过任务总数，轻松档相应减少阶段；阶段仍需覆盖整个起止日期范围。\n${CONFLICT_PROMPT}\n时间安排优先级：偏好时段内空闲 → 同日相邻时段 → 顺延日期。总任务数目标 ${target}（±30%），输出前自查数量并逐日核对重叠。` },
+      { role: "user", content: buildUserPrompt({ goal: goal.trim(), startDate, endDate, background, currentTasks, preciseTime, preferredWindow, density }) }
     ]
   });
   const rawContent = response.choices?.[0]?.message?.content;
@@ -177,7 +273,8 @@ async function makeStudyPlan(input = {}) {
       throw codedError("PARSE_FAILED", `AI 返回的 JSON 无法解析：${secondError.message}（finish_reason: ${finishReason}；首次解析：${firstError.message}）。`);
     }
   }
-  return validateSchedule(parsed, startDate, endDate, preciseTime);
+  const plan = enforceDensity(validateSchedule(parsed, startDate, endDate, preciseTime), target);
+  return resolveConflicts(plan, currentTasks, { preciseTime, startDate, endDate });
 }
 
 // ===== 图片课表识别（沿用阿里云百炼 qwen3-vl-plus，接口行为保持不变） =====
@@ -312,4 +409,4 @@ async function parseScheduleFromImage(base64Image, timetable) {
   return validateScheduleFromImage(parsed);
 }
 
-module.exports = { makeStudyPlan, parseScheduleFromImage };
+module.exports = { makeStudyPlan, parseScheduleFromImage, densityTarget, enforceDensity, resolveConflicts };

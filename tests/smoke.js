@@ -101,6 +101,23 @@ async function main() {
     const retainedNote = await (await api("/api/notes", "POST", { content: "保留在左侧", side: "left" })).json();
     assert.equal((await api("/api/ai-plan", "POST", { goal: "学高数", startDate: "2026-10-12", endDate: "2026-11-12", background: "基础一般", currentTasks: [], preciseTime: false, preferredWindow: "上午" })).status, 503, "未配置密钥时规划接口应返回明确提示");
     const invalidAiImage = await api("/api/ai/parse-schedule", "POST", { image: "无效图片" });
+    const planInput = { goal: "学习", startDate: "2026-10-12", endDate: "2026-11-12", preciseTime: true };
+    const occupied = { name: "现有事件", date: "2026-10-13", time: "09:00", duration: 45, review: false };
+    for (const density of ["light", "medium", "busy"]) {
+      assert.equal((await api("/api/ai-plan", "POST", { ...planInput, density, currentTasks: Array.from({ length: 200 }, () => occupied) })).status, 503);
+    }
+    for (const density of [null, "invalid", 1, "toString"]) {
+      const response = await api("/api/ai-plan", "POST", { ...planInput, density });
+      assert.equal(response.status, 400); assert.equal((await response.json()).error, "任务密度取值无效。");
+    }
+    for (const task of [{ ...occupied, time: "24:00" }, { ...occupied, time: "9:00" }, { ...occupied, time: undefined },
+      { ...occupied, time: "23:30", duration: 31 }, { ...occupied, duration: 1.5 }, { ...occupied, duration: 0 },
+      { ...occupied, name: "字".repeat(41) }, { ...occupied, allDay: "true" }, { ...occupied, date: "2026-02-30" }]) {
+      const response = await api("/api/ai-plan", "POST", { ...planInput, currentTasks: [task] });
+      assert.equal(response.status, 400); assert.equal((await response.json()).error, "现有任务摘要格式不正确。");
+    }
+    assert.equal((await api("/api/ai-plan", "POST", { ...planInput, currentTasks: Array(201).fill(occupied) })).status, 400);
+    assert.equal((await api("/api/ai-plan", "POST", { ...planInput, currentTasks: [{ ...occupied, time: "23:30", duration: 30, allDay: true, ignored: "不传给模型" }] })).status, 503);
     assert.equal(invalidAiImage.status, 400, "AI 图片接口应拒绝无效文件");
     const tinyPng = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL/nwAAAABJRU5ErkJggg==";
     const unconfiguredAi = await api("/api/ai/parse-schedule", "POST", { image: tinyPng });
