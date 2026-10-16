@@ -50,11 +50,36 @@ body:not(.signed-out) .auth-page { display: none; }
 
 /* 课表识别确认区沿用浅色卡片与原有表单控件风格。 */
 .ocr-panel { max-width: 900px; }
-.ocr-source-buttons { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 12px; }
-.ocr-source-buttons .button { display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
+.ocr-source-buttons { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; max-width: 380px; margin-bottom: 12px; }
+.ocr-source-column { display: flex; flex-direction: column; align-items: center; gap: 9px; min-width: 0; }
+.ocr-source-buttons .button { display: inline-flex; align-items: center; justify-content: center; cursor: default; pointer-events: none; max-width: 100%; padding: 12px 8px; font-size: .82rem; }
+.ocr-add-button { width: 38px; height: 38px; border: 1px solid #9bc4df; border-radius: 50%; background: #edf4f8; color: #6a8faf; font-size: 1.55rem; line-height: 1; }
+.ocr-add-button:hover:not(:disabled) { background: #e0eef5; border-color: #6a8faf; }
+.ocr-add-button:disabled { opacity: .45; }
+.button:focus-visible, .ocr-add-button:focus-visible { outline: 3px solid #9bc4df; outline-offset: 2px; }
 .ocr-file-input { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; clip-path: inset(50%); }
-.ocr-source-buttons label:has(.ocr-file-input:focus-visible) { outline: 3px solid #9bc4df; outline-offset: 2px; }
-.ocr-source-buttons label:has(.ocr-file-input:disabled) { opacity: .45; pointer-events: none; }
+.ocr-source-column:has(.ocr-add-button:disabled) > span { opacity: .45; }
+.timetable-panel { padding: 16px; margin-bottom: 24px; border: 1px solid #dbe8ef; border-radius: 13px; background: #f7fafc; }
+body.ocr-view .developer-credit { position: static; width: fit-content; max-width: 100%; margin: 20px 0 0 auto; }
+.timetable-heading, .timetable-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+.timetable-heading h3 { margin: 0; color: #365b75; }
+.timetable-heading { margin-bottom: 12px; }
+.timetable-parameters { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.timetable-parameters .field, .timetable-period .field { min-width: 0; margin: 0; }
+.timetable-parameters input, .timetable-period input { min-width: 0; max-width: 100%; }
+.timetable-actions { justify-content: flex-start; margin: 14px 0; }
+.timetable-periods { display: grid; gap: 10px; margin: 16px 0; }
+.timetable-period { display: grid; grid-template-columns: 65px repeat(2, minmax(0, 1fr)) 38px; align-items: center; gap: 10px; padding: 10px; border-radius: 9px; background: #fff; }
+.timetable-period strong { font-size: .82rem; color: #365b75; }
+#ai-draft-confirm { max-width: 100%; white-space: normal; }
+@media (max-width: 600px) {
+  .timetable-panel { padding: 12px; }
+  .timetable-parameters { grid-template-columns: 1fr; }
+  .timetable-period { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .timetable-period strong { grid-column: 1; grid-row: 1; }
+  .timetable-delete { grid-column: 2; grid-row: 1; justify-self: end; }
+  .timetable-period input { padding: 8px 4px; }
+}
 .ocr-preview { display: block; max-width: 100%; max-height: 250px; object-fit: contain; margin: 14px 0; border: 1px solid #e6edf2; border-radius: 11px; background: #f7fafc; }
 .ocr-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin: 20px 0 16px; color: #6e8191; font-size: .83rem; }
 .ai-schedule-draft { margin: 18px 0; padding: 20px; border: 1px solid #dbe8ef; border-radius: 13px; background: #f7fafc; }
@@ -69,9 +94,6 @@ body:not(.signed-out) .auth-page { display: none; }
 .ai-course-fields input, .ai-course-fields select { width: 100%; }
 .ai-term-settings { border-top: 1px solid #dbe8ef; padding-top: 16px; }
 .ai-term-settings .field { max-width: 260px; }
-.ai-section-times { display: grid; gap: 9px; margin: 10px 0 22px; }
-.ai-section-row { display: grid; grid-template-columns: 110px repeat(2, minmax(0, 200px)); align-items: end; gap: 12px; padding: 10px 12px; border-radius: 9px; background: #fff; }
-.ai-section-row strong { align-self: center; color: #365b75; font-size: .84rem; }
 .ocr-hint { margin: 16px 0 0; }
 
 /* 便签只显示在桌面版左侧，宽度为上一版的两倍。 */
@@ -152,6 +174,4 @@ body.signed-out .notes-sidebar { display: none !important; }
   .developer-credit { max-width: 260px; padding: 7px; }
   .developer-credit div { font-size: .57rem; }
   .ai-course-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .ai-section-row { grid-template-columns: 1fr 1fr; }
-  .ai-section-row strong { grid-column: 1 / -1; }
 }

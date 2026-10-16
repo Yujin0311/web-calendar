@@ -6,13 +6,14 @@
   <meta name="theme-color" content="#f7f9fc">
   <title>清序 · 学习与复习计划</title>
   <link rel="stylesheet" href="style.css">
-  <link rel="stylesheet" href="upgrade.css?v=2">
+  <link rel="stylesheet" href="upgrade.css?v=3">
   <style>[hidden]{display:none!important}</style>
-  <script defer src="auth.js"></script>
-  <script defer src="ai-schedule-client.js?v=2"></script>
+  <script defer src="timetable.js"></script>
+  <script defer src="auth.js?v=3"></script>
+  <script defer src="ai-schedule-client.js?v=3"></script>
   <script defer src="notes-client.js"></script>
   <script defer src="ai-plan-client.js"></script>
-  <script defer src="script.js?v=2"></script>
+  <script defer src="script.js?v=3"></script>
   <style>
     /* 开发者署名区块（含送花花与神秘链接）仅登录后显示；未登录完全隐藏。 */
     body.signed-out .developer-credit,
@@ -96,9 +97,30 @@
       </section>
       <!-- 照片由后端转发给 DeepSeek 解析；用户确认前不保存到任务数据库。 -->
       <section id="view-ocr" class="view" hidden aria-labelledby="ocr-title">
-        <div class="section-heading"><div><p class="eyebrow">IMAGE SCHEDULE</p><h2 id="ocr-title">图片识别导入</h2><p>上传大学周课表，核对全部课程，填写学期日期和节次时间后批量生成日程。</p></div></div>
+        <div class="section-heading"><div><p class="eyebrow">IMAGE SCHEDULE</p><h2 id="ocr-title">图片识别导入</h2><p>设置作息表，上传大学周课表，核对课程和学期日期后批量生成日程。</p></div></div>
         <div class="panel ocr-panel">
-          <div class="ocr-source-buttons"><label class="button secondary">选择本地图片<input id="ocr-file" class="ocr-file-input" type="file" accept="image/*"></label><label class="button ghost">手机拍照上传<input id="ocr-camera" class="ocr-file-input" type="file" accept="image/*" capture="environment"></label></div>
+          <section class="timetable-panel" aria-labelledby="timetable-title">
+            <div class="timetable-heading"><h3 id="timetable-title">作息表</h3><button id="timetable-toggle" class="text-button" type="button" aria-expanded="true" aria-controls="timetable-body">收起</button></div>
+            <form id="timetable-body" novalidate>
+              <p class="muted">上课时间设置：保存后，AI 将按此表识别节次，确认导入时使用最新保存的时间。</p>
+              <div class="timetable-parameters">
+                <label class="field"><span>每天课时数</span><input id="timetable-count" type="number" min="1" max="20" step="1" required></label>
+                <label class="field"><span>单节课时长（分钟）</span><input id="timetable-duration" type="number" min="5" max="180" step="1" required></label>
+                <label class="field"><span>课间休息（分钟）</span><input id="timetable-break" type="number" min="0" max="60" step="1" required></label>
+              </div>
+              <div class="timetable-actions"><button id="timetable-reflow" class="button secondary" type="button">按以上参数重排</button><button id="timetable-default" class="button ghost" type="button">恢复默认</button></div>
+              <div id="timetable-periods" class="timetable-periods"></div>
+              <button id="timetable-add" class="button ghost" type="button">＋ 添加一节</button>
+              <p id="timetable-error" class="form-error" role="alert" hidden></p>
+              <div class="timetable-actions"><button class="button primary" type="submit">保存作息表</button><span id="timetable-status" class="muted" role="status" aria-live="polite"></span></div>
+            </form>
+          </section>
+          <div class="ocr-source-buttons">
+            <div class="ocr-source-column"><span class="button secondary" aria-hidden="true">选择本地图片</span><button type="button" id="ocr-add-local" class="ocr-add-button" aria-label="添加本地图片">＋</button></div>
+            <div class="ocr-source-column"><span class="button ghost" aria-hidden="true">手机拍照上传</span><button type="button" id="ocr-add-camera" class="ocr-add-button" aria-label="手机拍照上传">＋</button></div>
+          </div>
+          <input id="ocr-file" class="ocr-file-input" type="file" accept="image/*" hidden>
+          <input id="ocr-camera" class="ocr-file-input" type="file" accept="image/*" capture="environment" hidden>
           <p id="ocr-file-name" class="muted">尚未选择图片</p>
           <img id="ocr-preview" class="ocr-preview" alt="待识别图片预览" hidden>
           <div class="ocr-actions"><button id="ocr-start" class="button primary" type="button">AI 解析日程</button><span id="ocr-status" role="status" aria-live="polite">等待选择图片</span></div>
@@ -108,9 +130,8 @@
             <label class="ai-select-all"><input id="ai-select-all" type="checkbox" checked> 全选课程</label>
             <div id="ai-course-list" class="ai-course-list"></div>
             <div class="ai-term-settings"><label class="field"><span>学期第 1 周的周一日期 <b>*</b></span><input id="ai-term-monday" type="date"></label><p class="muted">周次以这一天为基准计算。无法识别的课程名称、星期、节次或周次，可直接在上方修正。</p></div>
-            <h4>节次时间表</h4><p class="muted">只需填写所选课程用到的开始节次时间和结束节次时间。请以学校课表为准。</p>
-            <div id="ai-section-times" class="ai-section-times"></div>
             <p class="muted">点击确认后将批量生成所选课程的每周日程，并按现有规则处理节假日与时间冲突。</p>
+            <p id="ai-draft-error" class="form-error" role="alert" hidden></p>
             <button id="ai-draft-confirm" class="button primary" type="button">确认并批量生成日程</button>
           </article>
           <p class="muted ocr-hint">图片将发送到千问（Dashscope）API 进行视觉解析；解析结果在你确认并保存前不会写入任务数据库。支持 JPG、PNG、GIF、WebP，图片不超过 6 MB。</p>

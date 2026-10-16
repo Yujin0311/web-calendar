@@ -257,8 +257,10 @@ function validateScheduleFromImage(data) {
   return data;
 }
 
-async function parseScheduleFromImage(base64Image) {
+async function parseScheduleFromImage(base64Image, timetable) {
   validateImage(base64Image);
+  const schoolTimetable = require("../timetable").normalizeTimetable(timetable);
+  const timetablePrompt = `本校作息表（24 小时制，节次与时间一一对应，每天共 ${schoolTimetable.periodsPerDay} 节）：\n${schoolTimetable.periods.map((period) => `第${period.section}节 ${period.start}-${period.end}`).join("\n")}\n规则：sectionStart/sectionEnd 必须依据这张作息表判断；节次不得超出作息表范围；不要把作息表时间写进 JSON 的其它字段；识别不到节次时按原规则填空。`;
   const apiKey = process.env.DASHSCOPE_API_KEY?.trim();
   if (!apiKey) throw codedError("CONFIG_MISSING", "服务器尚未配置百炼 API Key。");
   // 禁用 SDK 自动重试。高密度课表图片的 OCR + 推理 + 长 JSON 输出可能超过 60 秒，
@@ -272,7 +274,7 @@ async function parseScheduleFromImage(base64Image) {
     max_tokens: 32768,
     temperature: 0.1,
     messages: [
-      { role: "system", content: OCR_SYSTEM_PROMPT },
+      { role: "system", content: `${OCR_SYSTEM_PROMPT}\n\n${timetablePrompt}` },
       { role: "user", content: [
         { type: "text", text: "请阅读整张课表，逐项提取全部课程，只返回指定的 JSON。" },
         { type: "image_url", image_url: { url: base64Image, detail: "low" } }

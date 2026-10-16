@@ -8,6 +8,8 @@ const path = require("node:path");
 const net = require("node:net");
 const { spawn } = require("node:child_process");
 const { makeICS } = require("../ics-export");
+const Database = require("better-sqlite3");
+const { defaultTimetable } = require("../timetable");
 
 const root = path.resolve(__dirname, "..");
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -26,6 +28,12 @@ async function main() {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "qingxu-smoke-"));
   const port = await freePort();
   const historyFile = path.join(temp, "export_history.json");
+  // 预建没有 timetable_json 列的旧库，验证启动时原地升级。
+  fs.mkdirSync(path.join(temp, "data"));
+  const oldDb = new Database(path.join(temp, "data", "qingxu.sqlite"));
+  oldDb.exec("CREATE TABLE user_settings (user_id TEXT PRIMARY KEY, offsets_json TEXT NOT NULL, default_time TEXT NOT NULL, holidays_json TEXT NOT NULL)");
+  oldDb.prepare("INSERT INTO user_settings VALUES(?,?,?,?)").run("legacy-user", "[0,2,7]", "10:30", '["2026-10-01"]');
+  oldDb.close();
   const child = spawn(process.execPath, [path.join(root, "server.js")], {
     // REGISTER_MAX_ATTEMPTS 临时调高：冒烟测试要连续注册多个账户，不测试限流路径。
     // DASHSCOPE_API_KEY / DEEPSEEK_API_KEY 显式置空：dotenv 不覆盖已存在的环境变量，
@@ -98,6 +106,32 @@ async function main() {
     const unconfiguredAi = await api("/api/ai/parse-schedule", "POST", { image: tinyPng });
     assert.equal(unconfiguredAi.status, 503, "未配置 API Key 时应返回可理解的提示，且不调用模型");
     const afterAi = await (await api("/api/sync")).json();
+    assert.deepEqual(afterAi.settings.timetable, defaultTimetable(), "旧数据库应补齐默认作息表");
+    const customTimetable = defaultTimetable();
+    customTimetable.periods[0] = { section: 1, start: "07:30", end: "08:15" };
+    assert.equal((await api("/api/settings", "PUT", { ...afterAi.settings, timetable: customTimetable })).status, 200);
+    assert.deepEqual((await (await api("/api/settings")).json()).timetable, customTimetable);
+    assert.deepEqual((await (await api("/api/sync")).json()).settings.timetable, customTimetable);
+    const invalidTimetable = { ...customTimetable, periodsPerDay: 21 };
+    for (const endpoint of ["/api/settings", "/api/sync"]) {
+      const body = endpoint === "/api/settings" ? { ...afterAi.settings, timetable: invalidTimetable } : { ...afterAi, settings: { ...afterAi.settings, timetable: invalidTimetable } };
+      const rejected = await api(endpoint, "PUT", body);
+      assert.equal(rejected.status, 400);
+      assert.match((await rejected.json()).error, /作息表/);
+    }
+    const invalidOcrTimetable = await api("/api/ai/parse-schedule", "POST", { image: tinyPng, timetable: invalidTimetable });
+    assert.equal(invalidOcrTimetable.status, 400);
+    assert.match((await invalidOcrTimetable.json()).error, /作息表/);
+    const checkDb = new Database(path.join(temp, "data", "qingxu.sqlite"));
+    assert(checkDb.pragma("table_info(user_settings)").some((column) => column.name === "timetable_json"));
+    assert.equal(checkDb.prepare("SELECT default_time FROM user_settings WHERE user_id = ?").get("legacy-user").default_time, "10:30", "列迁移不能覆盖旧设置");
+    assert.deepEqual(JSON.parse(checkDb.prepare("SELECT timetable_json FROM user_settings WHERE user_id = ?").get(registrationData.user.id).timetable_json), customTimetable);
+    for (const corrupt of ["", "{}", "{broken", "null"]) {
+      checkDb.prepare("UPDATE user_settings SET timetable_json = ? WHERE user_id = ?").run(corrupt, registrationData.user.id);
+      assert.deepEqual((await (await api("/api/settings")).json()).timetable, defaultTimetable());
+    }
+    checkDb.prepare("UPDATE user_settings SET timetable_json = ? WHERE user_id = ?").run(JSON.stringify(customTimetable), registrationData.user.id);
+    checkDb.close();
     assert.deepEqual(afterAi.tasks, [], "图片解析接口不能自动保存日程");
     const category = { id: "reading", name: "阅读", color: "#a48eb8" };
     const repeat = { id: "repeat-1", categoryId: category.id, categoryName: category.name, name: "每天读书", date: "2026-10-10", endDate: "2026-10-12", duration: 30, reminder: 15, timeMode: "fixed", time: "09:00", note: "读十页", review: false, recurrence: { type: "daily", weekdays: [] }, deletedOffsets: [], draftForm: null, events: [0, 1, 2].map((offset) => ({ id: `repeat-event-${offset}`, offset, round: -1, date: addDays("2026-10-10", offset), time: "09:00", duration: 30, completed: false })) };
@@ -105,6 +139,7 @@ async function main() {
     let data = { categories: [category], settings, tasks: [repeat], drafts: [] };
     let response = await api("/api/sync", "PUT", data);
     assert.equal(response.status, 200, await response.text());
+    assert.deepEqual((await (await api("/api/settings")).json()).timetable, customTimetable, "老离线快照缺字段不能覆盖已有作息表");
     assert.deepEqual((await (await api("/api/notes")).json()).map((note) => note.id), [retainedNote.id], "任务快照同步不能清空独立便签表");
     for (let index = 1; index < 30; index++) assert.equal((await api("/api/notes", "POST", { content: `便签${index}`, side: "left" })).status, 201);
     assert.equal((await api("/api/notes", "POST", { content: "第31条", side: "left" })).status, 400, "单用户最多 30 条便签");

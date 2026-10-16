@@ -11,6 +11,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { makeICS } = require("./ics-export");
 const { cleanExpiredSessions } = require("./session-cleanup");
+const { defaultTimetable, validateTimetable, normalizeTimetable } = require("./timetable");
 // AI 规划助手与图片课表识别都在 deepseekSchedule 中：规划走 DeepSeek chat completions，
 // 图片识别走百炼 qwen3-vl-plus 视觉模型。
 const { makeStudyPlan, parseScheduleFromImage } = require("./services/deepseekSchedule");
@@ -88,7 +89,8 @@ CREATE TABLE IF NOT EXISTS user_settings (
   user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
   offsets_json TEXT NOT NULL,
   default_time TEXT NOT NULL,
-  holidays_json TEXT NOT NULL
+  holidays_json TEXT NOT NULL,
+  timetable_json TEXT NOT NULL DEFAULT '{}'
 );
 CREATE TABLE IF NOT EXISTS tasks (
   id TEXT NOT NULL,
@@ -148,6 +150,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_expire_at ON sessions(expire_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_last_activity ON sessions(last_activity_at);
 `);
 // 已启动过早期第二版的本机数据库也补上“单条删除”的持久记录。
+if (!db.prepare("PRAGMA table_info(user_settings)").all().some((column) => column.name === "timetable_json")) db.exec("ALTER TABLE user_settings ADD COLUMN timetable_json TEXT NOT NULL DEFAULT '{}'");
 if (!db.prepare("PRAGMA table_info(tasks)").all().some((column) => column.name === "deleted_offsets_json")) db.exec("ALTER TABLE tasks ADD COLUMN deleted_offsets_json TEXT NOT NULL DEFAULT '[]'");
 if (!db.prepare("PRAGMA table_info(tasks)").all().some((column) => column.name === "draft_form_json")) db.exec("ALTER TABLE tasks ADD COLUMN draft_form_json TEXT");
 if (!db.prepare("PRAGMA table_info(tasks)").all().some((column) => column.name === "repeat_type")) db.exec("ALTER TABLE tasks ADD COLUMN repeat_type TEXT NOT NULL DEFAULT 'none'");
@@ -316,6 +319,8 @@ function loadState(userId) {
   const categories = db.prepare("SELECT id,name,color FROM categories WHERE user_id = ? ORDER BY rowid").all(userId);
   const settingsRow = db.prepare("SELECT * FROM user_settings WHERE user_id = ?").get(userId);
   const settings = settingsRow ? { offsets: JSON.parse(settingsRow.offsets_json), defaultTime: settingsRow.default_time, holidays: JSON.parse(settingsRow.holidays_json) } : { offsets: [0, 1, 2, 4, 7, 15, 30], defaultTime: "09:00", holidays: [] };
+  try { settings.timetable = normalizeTimetable(JSON.parse(settingsRow?.timetable_json || "{}")); }
+  catch { settings.timetable = defaultTimetable(); }
   const rows = db.prepare("SELECT * FROM tasks WHERE user_id = ? ORDER BY created_at, rowid").all(userId);
   const occurrences = db.prepare("SELECT * FROM occurrences WHERE user_id = ? ORDER BY event_date,start_time").all(userId);
   const byTask = new Map();
@@ -342,6 +347,9 @@ function validateState(data) {
     catIds.add(cat.id); catNames.add(cat.name);
   }
   const offsets = data.settings.offsets, holidays = data.settings.holidays;
+  // 老客户端和离线待同步快照缺字段时保留账户已有设置；显式非法值仍拒绝。
+  if (data.settings.timetable === undefined) data.settings.timetable = defaultTimetable();
+  validateTimetable(data.settings.timetable);
   if (!Array.isArray(offsets) || !offsets.length || offsets[0] !== 0 || offsets.length > 100 || offsets.some((n, i) => !Number.isInteger(n) || n < 0 || n > 3650 || (i && n <= offsets[i - 1])) || !validTime(data.settings.defaultTime) || !Array.isArray(holidays) || holidays.length > 1000 || holidays.some((d) => !validDate(d))) throw Error("设置数据无效。");
   for (const task of [...data.tasks, ...data.drafts]) {
     if (typeof task.id !== "string" || !task.id || task.id.length > 100 || taskIds.has(task.id)) throw Error("任务 ID 无效或重复。");
@@ -361,6 +369,7 @@ function validateState(data) {
 }
 
 const saveState = db.transaction((userId, data) => {
+  if (data?.settings && data.settings.timetable === undefined) data.settings.timetable = loadState(userId).settings.timetable;
   validateState(data);
   // 按 user_id 删除与重建，禁止影响其他账户；在一个 SQLite 事务中提交。
   db.prepare("DELETE FROM occurrences WHERE user_id = ?").run(userId);
@@ -368,7 +377,7 @@ const saveState = db.transaction((userId, data) => {
   db.prepare("DELETE FROM categories WHERE user_id = ?").run(userId);
   const insertCat = db.prepare("INSERT INTO categories(id,user_id,name,color) VALUES(?,?,?,?)");
   for (const cat of data.categories) insertCat.run(cat.id, userId, cat.name, cat.color);
-  db.prepare("INSERT INTO user_settings(user_id,offsets_json,default_time,holidays_json) VALUES(?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET offsets_json=excluded.offsets_json,default_time=excluded.default_time,holidays_json=excluded.holidays_json").run(userId, JSON.stringify(data.settings.offsets), data.settings.defaultTime, JSON.stringify(data.settings.holidays));
+  db.prepare("INSERT INTO user_settings(user_id,offsets_json,default_time,holidays_json,timetable_json) VALUES(?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET offsets_json=excluded.offsets_json,default_time=excluded.default_time,holidays_json=excluded.holidays_json,timetable_json=excluded.timetable_json").run(userId, JSON.stringify(data.settings.offsets), data.settings.defaultTime, JSON.stringify(data.settings.holidays), JSON.stringify(data.settings.timetable));
   const insertTask = db.prepare("INSERT INTO tasks(id,user_id,category_id,category_name,name,start_date,end_date,duration,reminder,time_mode,start_time,note,review,all_day,plan_group,parent_task_id,deleted_offsets_json,draft_form_json,repeat_type,repeat_weekdays_json,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
   const insertEvent = db.prepare("INSERT INTO occurrences(id,user_id,task_id,offset_days,round_number,event_date,start_time,duration,completed) VALUES(?,?,?,?,?,?,?,?,?)");
   const writtenAt = now();
@@ -404,12 +413,12 @@ app.put("/api/sync", auth, (req, res) => {
   // AI 只返回完整课表课程数组；接口不读写任务表，前端确认后才批量保存。
 app.post("/api/ai/parse-schedule", auth, async (req, res) => {
   try {
-    const timetable = await parseScheduleFromImage(req.body?.image);
-    res.json(timetable);
+    const timetable = req.body?.timetable === undefined ? defaultTimetable() : validateTimetable(req.body.timetable);
+    res.json(await parseScheduleFromImage(req.body?.image, timetable));
   } catch (error) {
     // 给前端有限长度的底层原因，完整原始内容只留在服务端控制台。
     const detail = String(error.message || error.code || error.name || "未知错误").replace(/\s+/g, " ").slice(0, 200);
-    if (error.code === "INVALID_IMAGE") return fail(res, 400, error.message);
+    if (error.code === "INVALID_IMAGE" || error.code === "INVALID_TIMETABLE") return fail(res, 400, error.message);
     if (error.code === "CONFIG_MISSING") return fail(res, 503, "AI 图片解析暂不可用：服务器未配置 DASHSCOPE_API_KEY。");
     if (error.code === "PARSE_FAILED") return fail(res, 422, detail);
     console.error("DeepSeek 图片解析失败：", error.name, error.status || "", error.code || "", detail);
@@ -529,6 +538,7 @@ app.get(["/login", "/register"], (req, res) => res.sendFile(path.join(__dirname,
 app.get("/style.css", (req, res) => res.sendFile(path.join(__dirname, "style.css")));
 app.get("/script.js", (req, res) => res.sendFile(path.join(__dirname, "script.js")));
 app.get("/auth.js", (req, res) => res.sendFile(path.join(__dirname, "auth.js")));
+app.get("/timetable.js", (req, res) => res.sendFile(path.join(__dirname, "timetable.js")));
 app.get("/ai-schedule-client.js", (req, res) => res.sendFile(path.join(__dirname, "ai-schedule-client.js")));
 app.get("/notes-client.js", (req, res) => res.sendFile(path.join(__dirname, "notes-client.js")));
 app.get("/ai-plan-client.js", (req, res) => res.sendFile(path.join(__dirname, "ai-plan-client.js")));

@@ -4,6 +4,8 @@
 
   const STORAGE_KEY = "qingxu-planner-v1";
   const DEFAULT_OFFSETS = [0, 1, 2, 4, 7, 15, 30];
+  const DEFAULT_TIMETABLE = window.QingxuTimetable.DEFAULT_TIMETABLE;
+  function defaultTimetable() { return JSON.parse(JSON.stringify(DEFAULT_TIMETABLE)); }
   const DEFAULT_CATEGORIES = [
     { id: "math", name: "高数学习", color: "#6d8fc1" },
     { id: "words", name: "背单词", color: "#8c9bc8" },
@@ -67,7 +69,7 @@
     return result;
   }
   function initialState() {
-    return { categories: clone(DEFAULT_CATEGORIES), tasks: [], drafts: [], settings: { offsets: [...DEFAULT_OFFSETS], defaultTime: "09:00", holidays: defaultHolidays() } };
+    return { categories: clone(DEFAULT_CATEGORIES), tasks: [], drafts: [], settings: { offsets: [...DEFAULT_OFFSETS], defaultTime: "09:00", holidays: defaultHolidays(), timetable: defaultTimetable() } };
   }
   function loadState() {
     try {
@@ -75,6 +77,7 @@
       if (!stored || !Array.isArray(stored.tasks) || !Array.isArray(stored.drafts) || !Array.isArray(stored.categories)) return initialState();
       const defaults = initialState();
       stored.settings = { ...defaults.settings, ...(stored.settings || {}) };
+      stored.settings.timetable = window.QingxuTimetable.normalizeTimetable(stored.settings.timetable);
       return stored;
     } catch { return initialState(); }
   }
@@ -86,9 +89,13 @@
   let toastTimer;
   const selectedSearchTaskIds = new Set();
 
-  function save() {
-    try { return window.QingxuAuth.save(state); }
-    catch { showNotice("保存失败", "浏览器无法写入当前账户的离线缓存。请检查存储空间或浏览器隐私设置。"); return false; }
+  function save({ inlineError = false, waitForSync = false } = {}) {
+    try { return window.QingxuAuth.save(state, { waitForSync }); }
+    catch {
+      const message = "浏览器无法写入当前账户的离线缓存。请检查存储空间或浏览器隐私设置。";
+      if (inlineError) throw Error(message);
+      showNotice("保存失败", message); return false;
+    }
   }
   function escapeHtml(value) {
     return String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
@@ -215,6 +222,7 @@
 
   function showView(name) {
     if (!window.QingxuAuth.isAuthenticated()) return;
+    document.body.classList.toggle("ocr-view", name === "ocr");
     $$(".view").forEach((view) => { view.hidden = view.id !== `view-${name}`; });
     $$(".nav-button").forEach((button) => button.classList.toggle("active", button.dataset.view === name));
     $("#export-tutorial").hidden = name !== "plan";
@@ -476,6 +484,90 @@
     }
     return values;
   }
+  function timetableError(message = "") {
+    $("#timetable-error").textContent = message;
+    $("#timetable-error").hidden = !message;
+  }
+  function timetableParameters() {
+    const parameters = { periodsPerDay: Number($("#timetable-count").value), defaultDuration: Number($("#timetable-duration").value), breakMinutes: Number($("#timetable-break").value) };
+    if (!$("#timetable-break").value || !Number.isInteger(parameters.periodsPerDay) || parameters.periodsPerDay < 1 || parameters.periodsPerDay > 20 || !Number.isInteger(parameters.defaultDuration) || parameters.defaultDuration < 5 || parameters.defaultDuration > 180 || !Number.isInteger(parameters.breakMinutes) || parameters.breakMinutes < 0 || parameters.breakMinutes > 60) throw Error("每天课时数须为 1–20 的整数，单节时长须为 5–180 分钟，课间须为 0–60 分钟的整数。");
+    return parameters;
+  }
+  function readTimetable() {
+    return { ...timetableParameters(), periods: $$(".timetable-period").map((row, index) => ({ section: index + 1, start: row.querySelector(".timetable-start").value, end: row.querySelector(".timetable-end").value })) };
+  }
+  function renderTimetable(value = state.settings.timetable, message = "已加载已保存的作息表。") {
+    $("#timetable-count").value = value.periodsPerDay;
+    $("#timetable-duration").value = value.defaultDuration;
+    $("#timetable-break").value = value.breakMinutes;
+    $("#timetable-periods").innerHTML = value.periods.map((period) => `<div class="timetable-period"><strong>第 ${period.section} 节</strong><label class="field"><span>开始时间</span><input class="timetable-start" aria-label="第 ${period.section} 节开始时间" type="time" value="${escapeHtml(period.start)}" required></label><label class="field"><span>结束时间</span><input class="timetable-end" aria-label="第 ${period.section} 节结束时间" type="time" value="${escapeHtml(period.end)}" required></label><button class="text-button danger timetable-delete" type="button" aria-label="删除第 ${period.section} 节" ${value.periods.length === 1 ? "disabled" : ""}>删除</button></div>`).join("");
+    $("#timetable-add").disabled = value.periods.length >= 20;
+    $("#timetable-status").textContent = message;
+    timetableError();
+  }
+  function resizeTimetable(value) {
+    const truncated = value.periods.length > value.periodsPerDay;
+    value.periods = value.periods.slice(0, value.periodsPerDay);
+    while (value.periods.length < value.periodsPerDay) {
+      const previousEnd = value.periods.at(-1)?.end;
+      if (previousEnd !== undefined && !/^([01]\d|2[0-3]):[0-5]\d$/.test(previousEnd)) throw Error("请先填写上一节有效的结束时间。");
+      const start = previousEnd === undefined ? 480 : minutes(previousEnd) + value.breakMinutes;
+      const end = start + value.defaultDuration;
+      if (end >= 1440) throw Error("自动补全的时间不能跨越午夜，请缩短课时、课间或手动调整时间。");
+      value.periods.push({ section: value.periods.length + 1, start: timeFromMinutes(start), end: timeFromMinutes(end) });
+    }
+    renderTimetable(value, truncated ? "已截断末尾多余节次，请保存作息表。" : "作息表已修改，尚未保存。");
+  }
+  async function editTimetable(action) {
+    timetableError();
+    try { await action(); } catch (error) { timetableError(error.message); }
+  }
+  $("#timetable-toggle").addEventListener("click", () => {
+    const collapsed = !$("#timetable-body").hidden;
+    $("#timetable-body").hidden = collapsed;
+    $("#timetable-toggle").textContent = collapsed ? "展开" : "收起";
+    $("#timetable-toggle").setAttribute("aria-expanded", String(!collapsed));
+  });
+  $("#timetable-body").addEventListener("input", () => { timetableError(); $("#timetable-status").textContent = "作息表已修改，尚未保存。"; });
+  $("#timetable-count").addEventListener("change", () => editTimetable(() => resizeTimetable(readTimetable())));
+  $("#timetable-add").addEventListener("click", () => editTimetable(() => {
+    const value = readTimetable();
+    if (value.periods.length >= 20) throw Error("每天最多设置 20 节课。");
+    value.periodsPerDay = value.periods.length + 1;
+    resizeTimetable(value);
+  }));
+  $("#timetable-periods").addEventListener("click", (event) => {
+    if (!event.target.matches(".timetable-delete")) return;
+    editTimetable(() => {
+      const value = readTimetable();
+      if (value.periods.length <= 1) return;
+      value.periods.splice($$(".timetable-period").indexOf(event.target.closest(".timetable-period")), 1);
+      value.periods.forEach((period, index) => { period.section = index + 1; });
+      value.periodsPerDay = value.periods.length;
+      renderTimetable(value, "已删除并重新编号节次，请保存作息表。");
+    });
+  });
+  $("#timetable-reflow").addEventListener("click", () => editTimetable(() => resizeTimetable({ ...timetableParameters(), periods: [] })));
+  $("#timetable-default").addEventListener("click", () => renderTimetable(defaultTimetable(), "已恢复默认作息表，请保存。"));
+  $("#timetable-body").addEventListener("submit", (event) => {
+    event.preventDefault();
+    editTimetable(async () => {
+      const value = window.QingxuTimetable.validateTimetable(readTimetable());
+      const previous = state.settings.timetable;
+      state.settings.timetable = clone(value);
+      const button = $("#timetable-body button[type='submit']");
+      button.disabled = true;
+      try { if (!await save({ inlineError: true, waitForSync: true })) throw Error("作息表保存失败，请先登录。"); }
+      catch (error) {
+        state.settings.timetable = previous;
+        try { save({ inlineError: true }); } catch { /* 保留原始保存错误。 */ }
+        throw error;
+      } finally { button.disabled = false; }
+      $("#timetable-status").textContent = "作息表已保存。离线时将在联网后自动同步。";
+      toast("作息表已保存，AI 解析将按此表换算节次时间。");
+    });
+  });
+
   function saveSettings() {
     try {
       const offsets = parseOffsets($("#review-offsets").value);
@@ -783,7 +875,7 @@
   }
 
   // 批量导入复用现有的每周生成器、课程节假日规则、冲突弹窗和持久化流程。
-  async function importAiCourses({ courses, termMonday, sectionTimes }) {
+  async function importAiCourses({ courses, termMonday }) {
     if (!window.QingxuAuth.isAuthenticated()) throw Error("请先登录，再批量导入课程。");
     if (!courses.length) throw Error("请至少勾选一门课程。");
     if (!isValidDate(termMonday) || new Date(dateValue(termMonday)).getUTCDay() !== 1) throw Error("请选择学期第 1 周的周一日期。");
@@ -793,6 +885,7 @@
     if (!courseCategory && state.categories.length >= 200) throw Error("分类数量已达上限，请先在设置中添加或整理「课程」分类。");
     const category = courseCategory || { id: id(), name: "课程", color: "#74a896" };
     const candidates = [];
+    const timetable = window.QingxuTimetable.validateTimetable(state.settings.timetable);
     for (const course of courses) {
       const name = course.courseName.trim();
       if (!name || name.length > 80) throw Error("请核对每门课程名称，名称不能留空且最多 80 字。");
@@ -800,8 +893,8 @@
       if (weekdayIndex < 0) throw Error(`请为「${name}」选择星期。`);
       const firstSection = course.sectionStart, lastSection = course.sectionEnd;
       if (!Number.isInteger(firstSection) || !Number.isInteger(lastSection) || firstSection < 1 || lastSection > 50 || lastSection < firstSection) throw Error(`请核对「${name}」的开始、结束节次。`);
-      const startTime = sectionTimes[firstSection]?.start, endTime = sectionTimes[lastSection]?.end;
-      if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(startTime || "") || !/^([01]\d|2[0-3]):[0-5]\d$/.test(endTime || "")) throw Error(`请填写「${name}」第 ${firstSection} 节的开始时间和第 ${lastSection} 节的结束时间。`);
+      if (firstSection > timetable.periodsPerDay || lastSection > timetable.periodsPerDay) throw Error(`「${name}」的节次超出作息表范围（共 ${timetable.periodsPerDay} 节），请先修改并保存作息表。`);
+      const startTime = timetable.periods[firstSection - 1].start, endTime = timetable.periods[lastSection - 1].end;
       const duration = minutes(endTime) - minutes(startTime);
       if (duration < 1 || duration > 1440) throw Error(`「${name}」的结束时间须晚于开始时间，且不能跨越午夜。`);
       const weeks = parseCourseWeeks(course.weekRange.trim());
@@ -823,6 +916,7 @@
       if (!candidate.events.length) throw Error(`「${name}」的所有上课日期都被节假日规则跳过，请核对周次或设置。`);
       candidates.push({ candidate, skipped: generated.skipped });
     }
+    const previousState = clone(state);
     if (!courseCategory) state.categories.push(category);
     let imported = 0, drafted = 0;
     const skippedDates = new Set();
@@ -837,7 +931,13 @@
         candidate.events.forEach((event) => importedDates.add(event.date));
       }
     }
-    save();
+    try { if (!await save({ inlineError: true, waitForSync: true })) throw Error("日程保存失败，请登录后重试。"); }
+    catch (error) {
+      state = previousState;
+      // 回滚未被服务器接受的离线快照，保留草稿供用户修改后重试。
+      try { save({ inlineError: true }); } catch { /* 存储不可用时仍就地报告原始错误。 */ }
+      throw error;
+    }
     const first = state.tasks.at(-1)?.events[0]?.date;
     if (first) { selectedDate = first; displayedMonth = first.slice(0, 7); }
     render(); showView(imported ? "plan" : "drafts"); window.QingxuAI.consume();
@@ -905,6 +1005,7 @@
     onImport: importAiPlan
   });
   window.QingxuAI.init({
+    getTimetable: () => clone(state.settings.timetable),
     onConfirm: importAiCourses
   });
 
@@ -912,7 +1013,7 @@
   window.QingxuAuth.boot({
     initialState,
     legacyLoader: loadState,
-    onState(data) { window.QingxuAI.reset(); window.QingxuPlan.reset(); window.QingxuNotes.accountChanged(window.QingxuAuth.isAuthenticated()); aiDraftInTaskForm = false; state = data; selectedSearchTaskIds.clear(); $("#task-search").value = "";
+    onState(data) { window.QingxuAI.reset(); window.QingxuPlan.reset(); window.QingxuNotes.accountChanged(window.QingxuAuth.isAuthenticated()); aiDraftInTaskForm = false; state = data; state.settings.timetable = window.QingxuTimetable.normalizeTimetable(state.settings.timetable); renderTimetable(); selectedSearchTaskIds.clear(); $("#task-search").value = "";
       // 老账户原有分类中补上新的全天分类，不修改已有任务。
       if (window.QingxuAuth.isAuthenticated() && !state.categories.some((category) => category.name === "全天") && state.categories.length < 200) { state.categories.push(clone(DEFAULT_CATEGORIES.at(-1))); save(); }
       selectedDate = todayShanghai(); displayedMonth = selectedDate.slice(0, 7); render(); if (window.QingxuAuth.isAuthenticated()) showView("plan"); },

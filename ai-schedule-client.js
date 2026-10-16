@@ -9,6 +9,12 @@ window.QingxuAI = (() => {
   const WEEKDAYS = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"];
 
   function clearError() { $("#ocr-error").textContent = ""; $("#ocr-error").hidden = true; }
+  function clearDraftError() { $("#ai-draft-error").textContent = ""; $("#ai-draft-error").hidden = true; }
+  function showDraftError(message) {
+    $("#ai-draft-error").textContent = message;
+    $("#ai-draft-error").hidden = false;
+    $("#ai-draft-error").scrollIntoView({ block: "center", behavior: "smooth" });
+  }
   function showError(message) {
     $("#ocr-error").textContent = message;
     $("#ocr-error").hidden = false;
@@ -16,6 +22,9 @@ window.QingxuAI = (() => {
   }
   function setBusy(value) {
     busy = value;
+    if (value) clearDraftError();
+    $("#ocr-add-local").disabled = value;
+    $("#ocr-add-camera").disabled = value;
     $("#ocr-start").disabled = value;
     $("#ocr-file").disabled = value;
     $("#ocr-camera").disabled = value;
@@ -34,6 +43,7 @@ window.QingxuAI = (() => {
     selectedFile = null;
     clearDraft();
     clearError();
+    clearDraftError();
     if (previewUrl) URL.revokeObjectURL(previewUrl);
     previewUrl = null;
     $("#ocr-preview").hidden = true;
@@ -111,35 +121,8 @@ window.QingxuAI = (() => {
       teacher: value(".ai-course-teacher"), location: value(".ai-course-location"), weekRange: value(".ai-course-weeks")
     };
   }
-  function renderSectionTimes() {
-    const container = $("#ai-section-times");
-    const previous = new Map([...container.querySelectorAll(".ai-section-row")].map((row) =>
-      [Number(row.dataset.section), { start: row.querySelector(".ai-time-start").value, end: row.querySelector(".ai-time-end").value }]));
-    const starts = new Set(), ends = new Set();
-    document.querySelectorAll(".ai-course-row").forEach((row) => {
-      if (!row.querySelector(".ai-course-check").checked) return;
-      const course = courseFromRow(row);
-      if (Number.isInteger(course.sectionStart) && course.sectionStart > 0 && course.sectionStart <= 50) starts.add(course.sectionStart);
-      if (Number.isInteger(course.sectionEnd) && course.sectionEnd > 0 && course.sectionEnd <= 50) ends.add(course.sectionEnd);
-    });
-    container.replaceChildren();
-    const sections = [...new Set([...starts, ...ends])].sort((a, b) => a - b);
-    if (!sections.length) { container.textContent = "请选择课程并核对节次。"; return; }
-    sections.forEach((section) => {
-      const row = document.createElement("div");
-      row.className = "ai-section-row";
-      row.dataset.section = String(section);
-      const title = document.createElement("strong");
-      title.textContent = `第 ${section} 节`;
-      row.append(title);
-      if (starts.has(section)) row.append(field("开始时间", previous.get(section)?.start || "", "ai-time-start", "time"));
-      else { const hidden = document.createElement("input"); hidden.type = "hidden"; hidden.className = "ai-time-start"; row.append(hidden); }
-      if (ends.has(section)) row.append(field("结束时间", previous.get(section)?.end || "", "ai-time-end", "time"));
-      else { const hidden = document.createElement("input"); hidden.type = "hidden"; hidden.className = "ai-time-end"; row.append(hidden); }
-      container.append(row);
-    });
-  }
   function renderDraft(schedule) {
+    clearDraftError();
     draft = schedule;
     const list = $("#ai-course-list");
     list.replaceChildren();
@@ -171,12 +154,12 @@ window.QingxuAI = (() => {
     });
     $("#ai-select-all").checked = true;
     $("#ai-term-monday").value = "";
-    $("#ai-section-times").replaceChildren();
-    renderSectionTimes();
     $("#ai-schedule-draft").hidden = false;
   }
 
-  function init({ onConfirm }) {
+  function init({ onConfirm, getTimetable }) {
+    $("#ocr-add-local").addEventListener("click", () => { if (!busy) $("#ocr-file").click(); });
+    $("#ocr-add-camera").addEventListener("click", () => { if (!busy) $("#ocr-camera").click(); });
     $("#ocr-file").addEventListener("change", (event) => chooseImage(event.target.files?.[0]));
     $("#ocr-camera").addEventListener("change", (event) => chooseImage(event.target.files?.[0]));
     $("#ocr-start").addEventListener("click", async () => {
@@ -195,7 +178,7 @@ window.QingxuAI = (() => {
       try {
         const image = await readDataUrl(selectedFile);
         if (currentRequest !== requestToken) return;
-        const schedule = await window.QingxuAuth.parseScheduleFromImage(image, controller.signal);
+        const schedule = await window.QingxuAuth.parseScheduleFromImage(image, getTimetable(), controller.signal);
         if (currentRequest !== requestToken) return;
         if (!schedule || schedule.isValid === false) { showError("图片中没有识别到学习日程，请换一张清晰的照片。"); return; }
         if (schedule.isValid !== true) throw Error("AI 返回的日程格式不正确，请重试。");
@@ -214,22 +197,18 @@ window.QingxuAI = (() => {
     });
     $("#ai-course-list").addEventListener("change", (event) => {
       if (event.target.matches(".ai-course-check")) $("#ai-select-all").checked = [...document.querySelectorAll(".ai-course-check")].every((check) => check.checked);
-      if (event.target.matches(".ai-course-start, .ai-course-end, .ai-course-check")) renderSectionTimes();
     });
     $("#ai-select-all").addEventListener("change", (event) => {
       document.querySelectorAll(".ai-course-check").forEach((check) => { check.checked = event.target.checked; });
-      renderSectionTimes();
     });
     $("#ai-draft-confirm").addEventListener("click", async () => {
       if (!draft || busy) return;
       clearError();
-      const courses = [...document.querySelectorAll(".ai-course-row")].filter((row) => row.querySelector(".ai-course-check").checked).map(courseFromRow);
-      const sectionTimes = Object.fromEntries([...document.querySelectorAll(".ai-section-row")].map((row) => [row.dataset.section, {
-        start: row.querySelector(".ai-time-start").value, end: row.querySelector(".ai-time-end").value
-      }]));
       setBusy(true);
-      try { await onConfirm({ courses, termMonday: $("#ai-term-monday").value, sectionTimes }); }
-      catch (error) { showError(error.message || "日程生成失败，请检查填写内容后重试。"); }
+      try {
+        const courses = [...document.querySelectorAll(".ai-course-row")].filter((row) => row.querySelector(".ai-course-check").checked).map(courseFromRow);
+        await onConfirm({ courses, termMonday: $("#ai-term-monday").value });
+      } catch (error) { showDraftError(error.message || "日程生成失败，请检查填写内容后重试。"); }
       finally { setBusy(false); }
     });
   }

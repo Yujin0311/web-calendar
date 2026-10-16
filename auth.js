@@ -12,7 +12,18 @@
   let queue = Promise.resolve();
 
   function parseStored(key) {
-    try { return JSON.parse(localStorage.getItem(key)); } catch { return null; }
+    try {
+      const stored = localStorage.getItem(key);
+      const value = JSON.parse(stored);
+      if (key.startsWith("qingxu-cache-v2-") && value?.settings) {
+        value.settings.timetable = window.QingxuTimetable.normalizeTimetable(value.settings.timetable);
+        const upgraded = JSON.stringify(value);
+        if (upgraded !== stored) {
+          try { localStorage.setItem(key, upgraded); } catch { /* 存储已满时仍允许读取现有离线数据。 */ }
+        }
+      }
+      return value;
+    } catch { return null; }
   }
   function setError(message) {
     $("#auth-error").textContent = message;
@@ -147,12 +158,12 @@
     // 规划请求只返回一次性 JSON，不写入浏览器缓存。
     requestAiPlan(input) { return request("/ai-plan", "POST", input); },
     // 仅将本次图片的 data URL 交给受登录保护的解析接口，不写入本地任务缓存。
-    async parseScheduleFromImage(image, signal) {
+    async parseScheduleFromImage(image, timetable, signal) {
       if (!session?.token) throw Error("请先登录。");
       const response = await fetch("/api/ai/parse-schedule", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.token}` },
-        body: JSON.stringify({ image }),
+        body: JSON.stringify({ image, timetable }),
         signal
       });
       const result = await response.json().catch(() => ({}));
@@ -160,19 +171,24 @@
       return result;
     },
     // 先写入当前用户缓存，再依次同步到服务器。断网时保留待同步标记。
-    save(data) {
+    save(data, { waitForSync = false } = {}) {
       if (!session?.user?.id) return false;
       const userId = session.user.id;
       const account = session;
       const snapshot = JSON.parse(JSON.stringify(data));
       localStorage.setItem(cacheKey(userId), JSON.stringify(snapshot));
       localStorage.setItem(pendingKey(userId), "1");
-      queue = queue.then(() => upload(snapshot, account)).catch((error) => {
+      const syncing = queue.then(() => upload(snapshot, account));
+      queue = syncing.catch((error) => {
         if (error.status === 401 && session?.token === account.token) {
           localStorage.removeItem(SESSION_KEY); session = null; showSignedOut("login"); setError("登录已失效。本机改动已缓存，重新登录后会同步。");
         } else callbacks?.onOffline(error.status ? `同步失败：${error.message}` : undefined);
       });
-      return true;
+      // 图片导入等待服务端校验；断网仍保留原有离线待同步行为。
+      return waitForSync ? syncing.then(() => true).catch((error) => {
+        if (!error.status) return true;
+        throw error;
+      }) : true;
     },
     boot(options) {
       callbacks = options;

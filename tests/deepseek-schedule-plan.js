@@ -104,6 +104,14 @@ async function main() {
     assert.deepEqual(await parseScheduleFromImage("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL/nwAAAABJRU5ErkJggg=="), { courses: [], isValid: false });
     assert.equal(options.baseURL, "https://dashscope.aliyuncs.com/compatible-mode/v1");
     assert.equal(request.model, "qwen3-vl-plus");
+    assert.match(request.messages[0].content, /每天共 12 节/);
+    assert.match(request.messages[0].content, /第6节 14:00-14:45/);
+    const image = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI\/ScL\/nwAAAABJRU5ErkJggg==";
+    await parseScheduleFromImage(image, { periodsPerDay: 1, defaultDuration: 45, breakMinutes: 5, periods: [{ section: 1, start: "07:30", end: "08:15" }] });
+    assert.match(request.messages[0].content, /每天共 1 节/);
+    assert.match(request.messages[0].content, /第1节 07:30-08:15/);
+    await parseScheduleFromImage(image, { periods: [] });
+    assert.match(request.messages[0].content, /每天共 12 节/);
   } finally {
     console.log = originalLog;
     if (originalCache) require.cache[openaiPath] = originalCache;
