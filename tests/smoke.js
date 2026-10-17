@@ -38,7 +38,7 @@ async function main() {
     // REGISTER_MAX_ATTEMPTS 临时调高：冒烟测试要连续注册多个账户，不测试限流路径。
     // DASHSCOPE_API_KEY / DEEPSEEK_API_KEY 显式置空：dotenv 不覆盖已存在的环境变量，
     // 否则子进程会从 .env 读到真实密钥，未配置密钥的断言就测不到。
-    cwd: root, env: { ...process.env, PORT: String(port), DEEPSEEK_API_KEY: "", DASHSCOPE_API_KEY: "", QINGXU_DATA_DIR: path.join(temp, "data"), QINGXU_EXPORT_HISTORY_FILE: historyFile, REGISTER_MAX_ATTEMPTS: "1000" }, stdio: ["ignore", "pipe", "pipe"]
+    cwd: root, env: { ...process.env, PORT: String(port), DEEPSEEK_API_KEY: "", DASHSCOPE_API_KEY: "", QINGXU_DATA_DIR: path.join(temp, "data"), QINGXU_EXPORT_HISTORY_FILE: historyFile, REGISTER_MAX_ATTEMPTS: "1000", LOGIN_MAX_ATTEMPTS: "1000", AI_LIMIT_DEEPSEEK_CNY: "100", AI_LIMIT_QWEN_CNY: "100" }, stdio: ["ignore", "pipe", "pipe"]
   });
   let serverOutput = "";
   child.stdout.on("data", (chunk) => { serverOutput += chunk.toString(); });
@@ -64,6 +64,7 @@ async function main() {
     assert.equal(unauthenticatedAi.status, 401, "AI 图片接口必须校验登录状态");
     assert.equal((await api("/api/notes")).status, 401, "便签接口必须校验登录状态");
     assert.equal((await api("/api/ai-plan", "POST", {})).status, 401, "AI 规划接口必须校验登录状态");
+    assert.equal((await api("/api/ai/usage")).status, 401, "AI 费用接口必须校验登录状态");
     // 邀请码注册：先通过管理 CLI 在临时库生成邀请码，再验证负路径与正常注册。
     const inviteCode = await new Promise((resolve, reject) => {
       const cli = spawn(process.execPath, [path.join(root, "scripts", "admin.js"), "invite", "generate", "10", "smoke-test"], { cwd: root, env: { ...process.env, QINGXU_DATA_DIR: path.join(temp, "data") }, stdio: ["ignore", "pipe", "pipe"] });
@@ -75,10 +76,28 @@ async function main() {
     assert(inviteCode, "应能通过管理 CLI 生成邀请码");
     assert.equal((await api("/api/auth/register", "POST", { username: `noinvite${Date.now()}`, password: "SmokeTest123!" })).status, 400, "无邀请码注册应被拒绝");
     assert.equal((await api("/api/auth/register", "POST", { username: `badinvite${Date.now()}`, password: "SmokeTest123!", inviteCode: "QX-0000-0000-0000" })).status, 403, "无效邀请码注册应被拒绝");
-    const registration = await api("/api/auth/register", "POST", { username: `smoke${Date.now()}`, password: "SmokeTest123!", inviteCode });
+    const smokeUsername = `smoke${Date.now()}`;
+    const smokePassword = "SmokeTest123!";
+    const registration = await api("/api/auth/register", "POST", { username: smokeUsername, password: smokePassword, inviteCode });
     const registrationData = await registration.json();
     assert.equal(registration.status, 201, JSON.stringify(registrationData));
     token = registrationData.token;
+    // 登录失败要区分「账号不存在」与「密码错误」，前端据 code 显示不同提示。
+    const wrongPassword = await api("/api/auth/login", "POST", { username: smokeUsername, password: `${smokePassword}-错` });
+    const wrongPasswordData = await wrongPassword.json();
+    assert.equal(wrongPassword.status, 401, "密码错误应返回 401");
+    assert.equal(wrongPasswordData.code, "PASSWORD_INCORRECT", "密码错误应带独立 code");
+    assert.match(wrongPasswordData.error, /密码错误/, "密码错误应提示密码错误，而不是账号错误");
+    const missingAccount = await api("/api/auth/login", "POST", { username: `ghost${Date.now()}`, password: smokePassword });
+    const missingAccountData = await missingAccount.json();
+    assert.equal(missingAccount.status, 401, "账号不存在应返回 401");
+    assert.equal(missingAccountData.code, "ACCOUNT_NOT_FOUND", "账号不存在应带独立 code");
+    assert.equal(missingAccountData.error, "账号错误，请检查账户名。", "账号不存在应显示「账号错误」");
+    const correctLogin = await api("/api/auth/login", "POST", { username: smokeUsername, password: smokePassword });
+    assert.equal(correctLogin.status, 200, "账号密码正确时应能登录");
+    const aiUsage = await (await api("/api/ai/usage")).json();
+    assert.deepEqual(aiUsage.providers.map((item) => [item.provider, item.limitCny, item.spentCny]),
+      [["deepseek", 100, 0], ["qwen", 100, 0]], "AI 额度默认各 100 元，新库应没有已用金额");
     assert.deepEqual(await (await api("/api/notes")).json(), [], "新账户的便签应为空");
     const createdNoteResponse = await api("/api/notes", "POST", { content: "记住公式", side: "left" });
     assert.equal(createdNoteResponse.status, 201);

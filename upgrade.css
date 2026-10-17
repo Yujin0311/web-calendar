@@ -19,6 +19,11 @@ body:not(.signed-out) .auth-page { display: none; }
 .password-wrap button { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); border: 0; border-radius: 7px; background: transparent; color: #6c8da4; width: 36px; height: 35px; font-size: 1.15rem; }
 .password-wrap button:hover { background: #eef5f9; }
 .auth-submit { width: 100%; margin-top: 9px; }
+/* 登录失败的提示反馈：抖动卡片 + 标红出错输入框，与 #auth-error 的红色提示条配合。 */
+#auth-form .field input[aria-invalid="true"] { border-color: #d4756f; background: #fff8f8; box-shadow: 0 0 0 3px #d4756f1f; }
+.auth-card.auth-shake { animation: auth-shake .34s ease-in-out; }
+@keyframes auth-shake { 20%, 60% { transform: translateX(-6px); } 40%, 80% { transform: translateX(6px); } }
+@media (prefers-reduced-motion: reduce) { .auth-card.auth-shake { animation: none; } }
 .account-menu { display: flex; align-items: center; gap: 10px; color: #617a8d; font-size: .82rem; white-space: nowrap; }
 
 /* 单次删除和整套删除并列，按钮始终位于任务信息下方。 */
@@ -214,6 +219,21 @@ body.notes-hidden .notes-toggle { left: 12px; }
 .credit-toggle { right: 14px; bottom: 160px; }
 body.credit-hidden .credit-toggle { bottom: 13px; }
 body.signed-out .panel-toggle { display: none; }
+/* AI 费用额度：设置页展示 DeepSeek 与千问的已用金额、上限与单价。 */
+.ai-budget-panel { min-width: 0; }
+.ai-budget-rows { display: grid; gap: 13px; margin: 4px 0 12px; }
+.ai-budget-row { padding: 13px 15px; background: #f7fafc; border: 1px solid #e4edf2; border-radius: 12px; }
+.ai-budget-row.blocked { background: #fdf4f0; border-color: #eed7cd; }
+.ai-budget-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; color: #365b75; font-size: .9rem; }
+.ai-budget-head span { color: #6c8da4; font-variant-numeric: tabular-nums; }
+.ai-budget-bar { height: 7px; margin: 9px 0 8px; background: #e8eef3; border-radius: 20px; overflow: hidden; }
+.ai-budget-bar i { display: block; height: 100%; background: linear-gradient(90deg, #7fb0cf, #4e86aa); border-radius: 20px; transition: width .3s; }
+.ai-budget-row.blocked .ai-budget-bar i { background: linear-gradient(90deg, #e2a48d, #c97658); }
+.ai-budget-row .muted { margin: 0; font-size: .78rem; line-height: 1.6; }
+.ai-budget-panel #ai-budget-status { margin-bottom: 0; font-size: .76rem; }
+/* 规划页、图片识别页里的一行额度摘要。 */
+.ai-budget-line { margin: 6px 0 0; font-size: .78rem; color: #7b93a5; line-height: 1.6; }
+.ai-budget-line:empty { display: none; }
 @media (min-width: 1180px) { .notes-toggle { display: grid; } }
 @media (min-width: 1500px) { .notes-toggle { left: 398px; } }
 @media (max-width: 1179px) { .site-header { flex-wrap: wrap; } }

@@ -230,6 +230,7 @@
     $$(".nav-button").forEach((button) => button.classList.toggle("active", button.dataset.view === name));
     $("#export-tutorial").hidden = name !== "plan";
     if (name === "settings") renderSettings();
+    if (name === "ai-plan" || name === "ocr") renderAiBudget();
     if (name === "drafts") renderDrafts();
   }
   function render() {
@@ -324,6 +325,34 @@
     $("#holiday-dates").value = state.settings.holidays.join("\n");
     $("#category-list").innerHTML = state.categories.map((category) =>
       `<div class="category-item">${tagHtml(category)}<button class="text-button edit-category" data-id="${escapeHtml(category.id)}" type="button">编辑</button><button class="text-button danger delete-category" data-id="${escapeHtml(category.id)}" type="button">删除</button></div>`).join("");
+    renderAiBudget();
+  }
+  // AI 费用额度：金额全部由服务端按 token 用量累计，页面只负责展示与刷新。
+  let aiBudgetLoading = false;
+  async function renderAiBudget() {
+    const rows = $("#ai-budget-rows");
+    if (!rows || aiBudgetLoading || !window.QingxuAuth.isAuthenticated()) return;
+    aiBudgetLoading = true;
+    try {
+      const data = await window.QingxuAuth.aiUsage();
+      rows.innerHTML = data.providers.map((item) => {
+        const spent = Number(item.spentCny) || 0, limit = Number(item.limitCny) || 0;
+        const percent = Math.min(100, Math.max(0, Number(item.usedPercent) || 0));
+        const state = item.blocked ? "额度已用完，该接口已停用" : `剩余 ¥${(Number(item.remainingCny) || 0).toFixed(2)}`;
+        return `<div class="ai-budget-row${item.blocked ? " blocked" : ""}"><div class="ai-budget-head"><strong>${escapeHtml(item.label)}</strong><span>¥${spent.toFixed(2)} / ¥${limit.toFixed(2)}</span></div><div class="ai-budget-bar" role="img" aria-label="${escapeHtml(item.label)}已用 ${percent.toFixed(1)}%"><i style="width:${percent.toFixed(1)}%"></i></div><p class="muted">${escapeHtml(state)} · 共 ${Number(item.calls) || 0} 次调用</p></div>`;
+      }).join("");
+      // 规划页与图片识别页也显示同一份额度，避免用户在不知情的情况下点到上限。
+      const summary = data.providers.map((item) => `${item.label}已用 ¥${(Number(item.spentCny) || 0).toFixed(2)} / ¥${(Number(item.limitCny) || 0).toFixed(2)}${item.blocked ? "（已停用）" : ""}`).join(" · ");
+      for (const selector of ["#ai-plan-budget", "#ocr-budget"]) {
+        const line = $(selector);
+        if (line) line.textContent = `AI 费用额度：${summary}`;
+      }
+      $("#ai-budget-status").textContent = `更新于 ${new Date(data.updatedAt).toLocaleString("zh-CN", { hour12: false })}`;
+    } catch (error) {
+      $("#ai-budget-status").textContent = error.message || "读取额度失败，请稍后重试。";
+    } finally {
+      aiBudgetLoading = false;
+    }
   }
 
   function openTask(source = null, taskId = null) {
@@ -894,6 +923,7 @@
   $("#next-month").addEventListener("click", () => { const [y, m] = displayedMonth.split("-").map(Number); displayedMonth = addDays(`${y}-${pad(m)}-28`, 5).slice(0, 7); render(); });
   $("#save-settings").addEventListener("click", saveSettings);
   $("#save-holidays").addEventListener("click", saveHolidays);
+  $("#ai-budget-refresh").addEventListener("click", renderAiBudget);
   $("#category-form").addEventListener("submit", (event) => {
     event.preventDefault();
     try { addCategory($("#category-name").value, $("#category-color").value); $("#category-name").value = ""; }

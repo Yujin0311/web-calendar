@@ -10,6 +10,17 @@
   let callbacks = null;
   let mode = location.pathname === "/register" ? "register" : "login";
   let queue = Promise.resolve();
+  let lockUntil = 0;
+  let lockTimer = null;
+  let submitting = false;
+
+  function updateSubmitButton() {
+    const button = $("#auth-submit");
+    const seconds = Math.max(0, Math.ceil((lockUntil - Date.now()) / 1000));
+    button.disabled = submitting || seconds > 0;
+    button.textContent = seconds > 0 ? `请等待 ${seconds} 秒` : mode === "register" ? "创建账户" : "登录";
+    if (!seconds && lockTimer !== null) { clearInterval(lockTimer); lockTimer = null; }
+  }
 
   function parseStored(key) {
     try {
@@ -26,13 +37,30 @@
     } catch { return null; }
   }
   function setError(message) {
-    $("#auth-error").textContent = message;
-    $("#auth-error").hidden = !message;
+    const box = $("#auth-error");
+    box.textContent = message;
+    box.hidden = !message;
+    // 每次报错重放一次抖动动画，让提示更醒目；清空提示时不触发。
+    if (message) {
+      const card = $(".auth-card");
+      card.classList.remove("auth-shake");
+      void card.offsetWidth;
+      card.classList.add("auth-shake");
+    }
+  }
+  // 出错时把焦点送回对应输入框，并用 aria-invalid 让读屏软件也能定位问题。
+  function flagField(input) {
+    input.setAttribute("aria-invalid", "true");
+    input.focus();
+    input.select?.();
+  }
+  function clearFlags() {
+    for (const id of ["#auth-username", "#auth-password"]) $(id).removeAttribute("aria-invalid");
   }
   function setMode(nextMode) {
     mode = nextMode;
     $("#auth-title").textContent = mode === "register" ? "注册清序" : "登录清序";
-    $("#auth-submit").textContent = mode === "register" ? "创建账户" : "登录";
+    updateSubmitButton();
     $("#auth-password").autocomplete = mode === "register" ? "new-password" : "current-password";
     // 邀请码仅注册时显示；切换到登录时清空残留输入。
     $("#invite-field").hidden = mode !== "register";
@@ -40,6 +68,7 @@
     $("#show-login").classList.toggle("active", mode === "login");
     $("#show-register").classList.toggle("active", mode === "register");
     setError("");
+    clearFlags();
     if (location.pathname !== `/${mode}`) history.replaceState(null, "", `/${mode}`);
   }
   function showSignedOut(nextMode = mode) {
@@ -62,7 +91,7 @@
       ...(body === undefined ? {} : { body: JSON.stringify(body) })
     });
     const result = await response.json().catch(() => ({}));
-    if (!response.ok) throw Object.assign(new Error(result.error || `请求失败（${response.status}）`), { status: response.status });
+    if (!response.ok) throw Object.assign(new Error(result.error || `请求失败（${response.status}）`), { status: response.status, code: result.code, retryAfter: Number(response.headers.get("Retry-After")) || 0 });
     return result;
   }
   async function upload(data, account = session) {
@@ -114,11 +143,13 @@
 
   async function submit(event) {
     event.preventDefault();
+    if (submitting || Date.now() < lockUntil) return;
     setError("");
+    clearFlags();
     const username = $("#auth-username").value.trim();
     const password = $("#auth-password").value;
-    if (!/^[\p{L}\p{N}_-]{3,32}$/u.test(username)) { setError("账户名须为 3–32 位字母、数字、下划线或短横线。"); return; }
-    if (password.length < 8 || password.length > 128) { setError("密码须为 8–128 个字符。"); return; }
+    if (!/^[\p{L}\p{N}_-]{3,32}$/u.test(username)) { setError("账户名须为 3–32 位字母、数字、下划线或短横线。"); flagField($("#auth-username")); return; }
+    if (password.length < 8 || password.length > 128) { setError("密码须为 8–128 个字符。"); flagField($("#auth-password")); return; }
     const body = { username, password };
     if (mode === "register") {
       // 注册必须携带邀请码；缺失时先在本端提示，不打扰服务器。
@@ -126,8 +157,8 @@
       if (!inviteCode) { setError("注册需要邀请码，请向管理员索取。"); return; }
       body.inviteCode = inviteCode;
     }
-    const button = $("#auth-submit");
-    button.disabled = true;
+    submitting = true;
+    updateSubmitButton();
     try {
       const result = await request(`/auth/${mode}`, "POST", body);
       session = result;
@@ -136,8 +167,17 @@
       $("#auth-invite").value = "";
       await loadForAccount();
     } catch (error) {
-      setError(error.message === "Failed to fetch" ? "无法连接服务器，请先运行 npm start。" : error.message);
-    } finally { button.disabled = false; }
+      // 账号不存在 / 密码错误由服务端用 code 区分，本端给出可操作的提示并聚焦出错的那一项。
+      if (error.status === 429) {
+        setError(error.message);
+        lockUntil = Date.now() + (error.retryAfter || 60) * 1000;
+        if (lockTimer !== null) clearInterval(lockTimer);
+        lockTimer = setInterval(updateSubmitButton, 250);
+      }
+      else if (error.code === "ACCOUNT_NOT_FOUND") { setError("账号错误，请检查账户名。"); flagField($("#auth-username")); }
+      else if (error.code === "PASSWORD_INCORRECT") { setError("密码错误，请重新输入密码。"); flagField($("#auth-password")); }
+      else setError(error.message === "Failed to fetch" ? "无法连接服务器，请先运行 npm start。" : error.message);
+    } finally { submitting = false; updateSubmitButton(); }
   }
 
   window.QingxuAuth = {
@@ -157,6 +197,8 @@
     deleteNote(id) { return request(`/notes/${encodeURIComponent(id)}`, "DELETE"); },
     // 规划请求只返回一次性 JSON，不写入浏览器缓存。
     requestAiPlan(input) { return request("/ai-plan", "POST", input); },
+    // AI 费用额度（已用金额与上限）由服务端按 token 用量累计，前端只做展示。
+    aiUsage() { return request("/ai/usage"); },
     // 仅将本次图片的 data URL 交给受登录保护的解析接口，不写入本地任务缓存。
     async parseScheduleFromImage(image, timetable, signal) {
       if (!session?.token) throw Error("请先登录。");
@@ -195,6 +237,13 @@
       $("#show-login").addEventListener("click", () => setMode("login"));
       $("#show-register").addEventListener("click", () => setMode("register"));
       $("#auth-form").addEventListener("submit", submit);
+      // 用户重新输入时撤掉上一轮的报错标记，避免红框一直停留。
+      for (const id of ["#auth-username", "#auth-password"]) {
+        $(id).addEventListener("input", () => {
+          $(id).removeAttribute("aria-invalid");
+          if (!$("#auth-error").hidden) setError("");
+        });
+      }
       $("#toggle-password").addEventListener("click", () => {
         const input = $("#auth-password");
         const visible = input.type === "password";

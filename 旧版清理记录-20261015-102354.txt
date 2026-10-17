@@ -1,0 +1,38 @@
+REMOVED OLD VERSION MANIFEST
+path: /home/yujin0311/web-calendar.old-20261015-102354
+removed_at: 2026-10-16T11:51:31-04:00
+reason: superseded by /home/yujin0311/web-calendar; data/.env duplicated in /home/yujin0311/backup
+
+c62482ecf25f49ff4a1304303a1359b8d2f26938a4c440e0a974ed7566c86873  /home/yujin0311/web-calendar.old-20261015-102354/ics-export.js
+f9cc5807ed279f05e3e43425106eb77ccd30aabe09d1fcfa418357bdeb70f897  /home/yujin0311/web-calendar.old-20261015-102354/auth.js
+e761eebad4dabc25dc1bc24bf83f84e231560051fc8877f2e98a8aa8c7df5fc0  /home/yujin0311/web-calendar.old-20261015-102354/.env.example
+2db51e82f6515da77014c1eb203e09161cb751fc2bc451df70273f5e8398b670  /home/yujin0311/web-calendar.old-20261015-102354/.gitignore
+808c4f024b5c45c24564bef874f20c95f8c9e4610709736d7eee1bccd4412c43  /home/yujin0311/web-calendar.old-20261015-102354/tests/deepseek-plan.js
+300c72eca29d1666f98b2f8fa0240008405ef4011e871d8c7cfe47fabf1211a8  /home/yujin0311/web-calendar.old-20261015-102354/tests/deepseek-schedule.js
+1c5e6ac91bec00b4db2028c184affcc9aac68f96334c22f8a8b9366467f528f7  /home/yujin0311/web-calendar.old-20261015-102354/tests/smoke.js
+8033f27f2cb61ef7c3596a46a6423455588f461ac35d3a7730153d39e81fe59e  /home/yujin0311/web-calendar.old-20261015-102354/index.html
+0f8f3cb78c1fac8c53e4c8d995c1e0a5a762e3f1686691b91de7c0fe40ee4c8c  /home/yujin0311/web-calendar.old-20261015-102354/README.md
+7439e206b3e1f920588f7bf6ce69a39bc01f4d40b44d8add211c6e776a3d592e  /home/yujin0311/web-calendar.old-20261015-102354/.env
+c20f1ac5202ab098072ce67054366b56d938cda37ee7e5d957c1fd16175f16bd  /home/yujin0311/web-calendar.old-20261015-102354/ai-plan-client.js
+956a1cd49e0e06ac83fa59139b3a019243b4a28947b8390d43bf0232142a174b  /home/yujin0311/web-calendar.old-20261015-102354/upgrade.css
+135a877fa8b47ca98bc6753ca14999299e89bceda40ea803bf6e6620878dbb84  /home/yujin0311/web-calendar.old-20261015-102354/notes-client.js
+9e2974947e9128aadb3a2bbb27be03b173599c8113def1432fbcc736c5e61987  /home/yujin0311/web-calendar.old-20261015-102354/data/qingxu.sqlite-wal
+415c887420f83ca9121e0b87fc0d4a046f2c1141ce0d125335eb9c6863b7c5be  /home/yujin0311/web-calendar.old-20261015-102354/data/jwt-secret
+97e8d54f8a7255106f66cf1b213c4a4d7b558d21310b1c2bfedc3d0d526dddda  /home/yujin0311/web-calendar.old-20261015-102354/data/qingxu.sqlite
+0c3d7100a6035044718592d28de0d555dec4a8f6932a1f5b295408250e0f44ed  /home/yujin0311/web-calendar.old-20261015-102354/data/qingxu.sqlite-shm
+933ce7345eac1cbfcd19bc85a1cec58bd8a4023d3df5685e1850d1ec49dc58f9  /home/yujin0311/web-calendar.old-20261015-102354/server.js
+4d7cdc894552d9ab57c1ceb37638fcf23c0d598ea5bc5c1c22d5d1bb60b14c25  /home/yujin0311/web-calendar.old-20261015-102354/services/deepseekSchedule.js
+24734421a6a7100be4e42b83e67da299fb1fe4a4b8678f773eacf111e9a38d23  /home/yujin0311/web-calendar.old-20261015-102354/services/deepseekPlan.js
+4322634775ff2c57d9f02a52fb02f806811f64033015ac94b566347193315c09  /home/yujin0311/web-calendar.old-20261015-102354/data-backup/jwt-secret
+73ae43912980e144bd42b5d0486dbaafce39b40bee37890e2f193d5857d6502c  /home/yujin0311/web-calendar.old-20261015-102354/data-backup/qingxu.sqlite
+dcc121eec30e058547a1bb540df827b0a1142629ae49236ac77d645bb6e1c60b  /home/yujin0311/web-calendar.old-20261015-102354/script.js
+5000419e5d4c1046281500cb4cf3d9e76324de57299fd87a39784e5340e4d82e  /home/yujin0311/web-calendar.old-20261015-102354/ai-schedule-client.js
+01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b  /home/yujin0311/web-calendar.old-20261015-102354/easteregg.md
+855f21e79cafd45853c8a85006732abc444aa3c5ca0bb4139dd58d2bdaac01f6  /home/yujin0311/web-calendar.old-20261015-102354/style.css
+5d68f75a10978c40e6283f9c794a8ab83534243de3e3de978a3f4f0d5e4183d4  /home/yujin0311/web-calendar.old-20261015-102354/invite-manage.js
+c37dfb8a0fabfe1336840b5ad68e6bdf4c29fc70f08a91d84a65fa066925167b  /home/yujin0311/web-calendar.old-20261015-102354/migrations/001_invite_codes_and_session_cleanup.sql
+87363843ff5b365902819ac65dcffd0308a2680455901b2d16a6215942333a46  /home/yujin0311/web-calendar.old-20261015-102354/package.json
+ab5875c30bcac036f6d10fba05a2465e994622a8b493a7d1b8e00d1a3325b1ae  /home/yujin0311/web-calendar.old-20261015-102354/session-cleanup.js
+6bfc83c03fb49c07e2c669229ef2895350a524596fba5333b53e3fd56ca365b7  /home/yujin0311/web-calendar.old-20261015-102354/.env.save
+ac186d942c17f84819516b73ab3ae46dd078184068386e28700aa066dcd13bad  /home/yujin0311/web-calendar.old-20261015-102354/scripts/admin.js
+0f26e42f755ffa7941f9df3f80ce210915bd0e71a6180d567637afe8d13173b6  /home/yujin0311/web-calendar.old-20261015-102354/package-lock.json

@@ -10,6 +10,8 @@ const OpenAI = require("openai");
 // DeepSeek 平台地址、模型与超时：与图片识别模块保持同一套 SDK 参数约定。
 const DEEPSEEK_BASE_URL = "https://api.deepseek.com";
 const DEEPSEEK_MODEL = "deepseek-chat";
+// 图片识别用的百炼视觉模型：费用上限也按这个模型结算。
+const QWEN_MODEL = "qwen3-vl-plus";
 // 禁用 SDK 自动重试；规划属于长输出请求，超时放宽到 90 秒
 //（须小于 nginx proxy_read_timeout 与 Cloudflare 100 秒限制）。
 const REQUEST_TIMEOUT_MS = 90_000;
@@ -223,7 +225,7 @@ function buildUserPrompt({ goal, startDate, endDate, background, currentTasks, p
 // 每条子任务把自身标题写入自己的备注；needReview 决定是否按艾宾浩斯节点生成复习日程；
 // preciseTime=false 时 startTime 为空字符串，任务按全天日程保存（只保留日期）。
 async function makeStudyPlan(input = {}) {
-  const { goal, startDate, endDate, background = "", currentTasks = [], preciseTime, preferredWindow = "", density = "medium" } = input;
+  const { goal, startDate, endDate, background = "", currentTasks = [], preciseTime, preferredWindow = "", density = "medium", onUsage } = input;
   if (!Object.hasOwn(DENSITY_PROMPTS, density)) throw codedError("PARSE_FAILED", "任务密度取值无效。");
   if (typeof goal !== "string" || !goal.trim() || goal.trim().length > 500) throw codedError("PARSE_FAILED", "学习目标须为 1–500 个字符。");
   if (!validDate(startDate) || !validDate(endDate) || endDate < startDate) throw codedError("PARSE_FAILED", "请选择有效的起止日期。");
@@ -248,6 +250,12 @@ async function makeStudyPlan(input = {}) {
   const rawContent = response.choices?.[0]?.message?.content;
   const finishReason = response.choices?.[0]?.finish_reason ?? "未知";
   const usage = response.usage ?? null;
+  // 费用统计由 server.js 注入的回调完成；即使后面解析失败，token 也已经花掉了，
+  // 所以必须在校验之前回传用量，且回调异常不能影响规划结果。
+  if (typeof onUsage === "function") {
+    try { onUsage({ provider: "deepseek", model: DEEPSEEK_MODEL, usage }); }
+    catch (error) { console.error("[ai-plan] 用量回调失败：", error); }
+  }
   // 调试日志只写在 npm start 的后端控制台，不把原始计划文本回传到错误响应。
   console.log("===== DeepSeek原始返回 =====");
   console.log(rawContent);
@@ -354,7 +362,7 @@ function validateScheduleFromImage(data) {
   return data;
 }
 
-async function parseScheduleFromImage(base64Image, timetable) {
+async function parseScheduleFromImage(base64Image, timetable, onUsage) {
   validateImage(base64Image);
   const schoolTimetable = require("../timetable").normalizeTimetable(timetable);
   const timetablePrompt = `本校作息表（24 小时制，节次与时间一一对应，每天共 ${schoolTimetable.periodsPerDay} 节）：\n${schoolTimetable.periods.map((period) => `第${period.section}节 ${period.start}-${period.end}`).join("\n")}\n规则：sectionStart/sectionEnd 必须依据这张作息表判断；节次不得超出作息表范围；不要把作息表时间写进 JSON 的其它字段；识别不到节次时按原规则填空。`;
@@ -364,7 +372,7 @@ async function parseScheduleFromImage(base64Image, timetable) {
   // 超时设为 90 秒（须小于 nginx proxy_read_timeout 与 Cloudflare 100 秒限制）。
   const client = new OpenAI({ apiKey, baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1", timeout: REQUEST_TIMEOUT_MS, maxRetries: 0 });
   const response = await client.chat.completions.create({
-    model: "qwen3-vl-plus",
+    model: QWEN_MODEL,
     response_format: { type: "json_object" },
     // qwen3-vl-plus 的思考 token 也计入 max_tokens；密集课表的推理 + 完整课程 JSON
     // 可能超过 8192 导致 finish_reason=length，因此放宽到 32768（API 实测接受）。
@@ -381,6 +389,11 @@ async function parseScheduleFromImage(base64Image, timetable) {
   const rawContent = response.choices?.[0]?.message?.content;
   const finishReason = response.choices?.[0]?.finish_reason ?? "未知";
   const usage = response.usage ?? null;
+  // 与规划接口一致：先回传用量再校验内容，截断或格式错误也已经产生费用。
+  if (typeof onUsage === "function") {
+    try { onUsage({ provider: "qwen", model: QWEN_MODEL, usage }); }
+    catch (error) { console.error("[ocr] 用量回调失败：", error); }
+  }
   // 调试日志只写在 npm start 的后端控制台，不把原始识别文本或图片回传到错误响应。
   console.log("===== qwen3-vl-plus原始返回 =====");
   console.log(rawContent);
@@ -409,4 +422,4 @@ async function parseScheduleFromImage(base64Image, timetable) {
   return validateScheduleFromImage(parsed);
 }
 
-module.exports = { makeStudyPlan, parseScheduleFromImage, densityTarget, enforceDensity, resolveConflicts };
+module.exports = { makeStudyPlan, parseScheduleFromImage, validateImage, densityTarget, enforceDensity, resolveConflicts };

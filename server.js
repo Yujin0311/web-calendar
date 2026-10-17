@@ -14,7 +14,9 @@ const { cleanExpiredSessions } = require("./session-cleanup");
 const { defaultTimetable, validateTimetable, normalizeTimetable } = require("./timetable");
 // AI 规划助手与图片课表识别都在 deepseekSchedule 中：规划走 DeepSeek chat completions，
 // 图片识别走百炼 qwen3-vl-plus 视觉模型。
-const { makeStudyPlan, parseScheduleFromImage, densityTarget } = require("./services/deepseekSchedule");
+const { makeStudyPlan, parseScheduleFromImage, validateImage, densityTarget } = require("./services/deepseekSchedule");
+// AI 费用上限：按接口累计 token 花费，超过额度后停止调用（默认各 100 元，可在 .env 调整）。
+const { createAiBudget } = require("./services/aiBudget");
 
 // 本地开发读取 .env；Render 等部署环境直接提供同名环境变量。
 require("dotenv").config({ path: path.join(__dirname, ".env"), quiet: true });
@@ -39,6 +41,9 @@ const envNum = (key, fallback) => { const value = Number(process.env[key]); retu
 // 注册限流：同一 IP 在窗口期内最多尝试注册的次数（成功与失败都计入）。
 const REGISTER_WINDOW_MINUTES = envNum("REGISTER_WINDOW_MINUTES", 10);
 const REGISTER_MAX_ATTEMPTS = envNum("REGISTER_MAX_ATTEMPTS", 3);
+// 登录与注册独立计数；成功登录后清零。
+const LOGIN_WINDOW_MINUTES = envNum("LOGIN_WINDOW_MINUTES", 10);
+const LOGIN_MAX_ATTEMPTS = envNum("LOGIN_MAX_ATTEMPTS", 10);
 // 会话空闲超时（小时）与绝对超时（天）。
 const SESSION_IDLE_TIMEOUT_HOURS = envNum("SESSION_IDLE_TIMEOUT_HOURS", 24);
 const SESSION_ABSOLUTE_TIMEOUT_DAYS = envNum("SESSION_ABSOLUTE_TIMEOUT_DAYS", 7);
@@ -164,6 +169,8 @@ if (!db.prepare("PRAGMA table_info(sessions)").all().some((column) => column.nam
   db.exec("ALTER TABLE sessions ADD COLUMN last_activity_at INTEGER NOT NULL DEFAULT 0; ALTER TABLE sessions ADD COLUMN expire_at INTEGER NOT NULL DEFAULT 0;");
   db.exec("UPDATE sessions SET last_activity_at = CAST(strftime('%s', created_at) AS INTEGER) * 1000, expire_at = expires_at WHERE last_activity_at = 0");
 }
+// AI 费用上限：建表与累计查询都在 aiBudget 里完成，接口只负责预留/结算/失败归还。
+const aiBudget = createAiBudget(db);
 
 app.disable("x-powered-by");
 app.use(express.json({ limit: "10mb" }));
@@ -208,6 +215,7 @@ function issueToken(userId) {
 // ===== 功能1：邀请码注册 + 注册 IP 限流（阻止脚本恶意批量注册） =====
 // 限流为进程内滑动窗口（轻量方案，不引入 Redis）；服务重启后计数清零，属可接受折衷。
 const registerAttempts = new Map(); // ip -> 窗口期内的尝试时间戳数组
+const loginAttempts = new Map();
 function clientIp(req) {
   // 仅当部署在 Nginx/Caddy 等反代后并设置 TRUST_PROXY=true 时才信任转发头，防止伪造绕过限流。
   if (process.env.TRUST_PROXY === "true") {
@@ -216,21 +224,25 @@ function clientIp(req) {
   }
   return req.socket.remoteAddress || "unknown";
 }
-function allowRegister(ip) {
+function takeAttempt(store, ip, max, windowMs) {
   const nowMs = Date.now();
-  const windowMs = REGISTER_WINDOW_MINUTES * 60000;
-  const recent = (registerAttempts.get(ip) || []).filter((attempt) => nowMs - attempt < windowMs);
-  if (recent.length >= REGISTER_MAX_ATTEMPTS) { registerAttempts.set(ip, recent); return false; }
-  recent.push(nowMs);
-  registerAttempts.set(ip, recent);
+  const recent = (store.get(ip) || []).filter((attempt) => nowMs - attempt < windowMs);
+  const allowed = recent.length < max;
+  // 超限请求不写入时间戳，避免不断请求延长封锁。
+  const retryAfterMs = allowed ? 0 : Math.max(0, recent[0] + windowMs - nowMs);
+  if (allowed) recent.push(nowMs);
+  store.set(ip, recent);
   // 防止攻击者用海量假 IP 撑爆内存：超过上限时清理窗口期外的记录。
-  if (registerAttempts.size > 10000) {
-    for (const [key, attempts] of registerAttempts) {
-      if (!attempts.some((attempt) => nowMs - attempt < windowMs)) registerAttempts.delete(key);
-      if (registerAttempts.size <= 5000) break;
+  if (store.size > 10000) {
+    for (const [key, attempts] of store) {
+      if (!attempts.some((attempt) => nowMs - attempt < windowMs)) store.delete(key);
+      if (store.size <= 5000) break;
     }
   }
-  return true;
+  return { allowed, retryAfterMs };
+}
+function allowRegister(ip) {
+  return takeAttempt(registerAttempts, ip, REGISTER_MAX_ATTEMPTS, REGISTER_WINDOW_MINUTES * 60000).allowed;
 }
 // 创建用户与消耗邀请码次数放在同一事务：better-sqlite3 同步执行天然串行，
 // 叠加 used_count < max_use_count 条件更新，双重防止并发超用。
@@ -271,11 +283,20 @@ app.post("/api/auth/login", async (req, res) => {
   const username = String(req.body?.username || "").trim();
   const password = req.body?.password;
   if (typeof password !== "string") return fail(res, 400, "请填写密码。");
+  const ip = clientIp(req);
+  const attempt = takeAttempt(loginAttempts, ip, LOGIN_MAX_ATTEMPTS, LOGIN_WINDOW_MINUTES * 60000);
+  if (!attempt.allowed) {
+    res.setHeader("Retry-After", Math.max(1, Math.ceil(attempt.retryAfterMs / 1000)));
+    return res.status(429).json({ error: `登录尝试过于频繁，请 ${LOGIN_WINDOW_MINUTES} 分钟后再试。`, code: "LOGIN_RATE_LIMITED" });
+  }
   const user = db.prepare("SELECT id,username,password_hash FROM users WHERE username = ?").get(username);
   // 未找到用户时仍执行一次哈希比较，减少账户枚举的时间差。
   const dummyHash = "$2a$12$C6UzMDM.H6dfI/f/IKcEe.O4B.cYp5uMHI9G5/NYTeFh5b7UZ5.bO";
   const matches = await bcrypt.compare(password, user?.password_hash || dummyHash);
-  if (!user || !matches) return fail(res, 401, "账户名或密码错误。");
+  // 账户不存在与密码错误分别提示，方便用户定位输错的是哪一项；code 供前端做精确文案映射。
+  if (!user) return res.status(401).json({ error: "账号错误，请检查账户名。", code: "ACCOUNT_NOT_FOUND" });
+  if (!matches) return res.status(401).json({ error: "密码错误，请重新输入密码。", code: "PASSWORD_INCORRECT" });
+  loginAttempts.delete(ip);
   return res.json({ token: issueToken(user.id), user: { id: user.id, username: user.username } });
 });
 app.post("/api/auth/logout", auth, (req, res) => {
@@ -412,12 +433,20 @@ app.put("/api/sync", auth, (req, res) => {
 });
   // AI 只返回完整课表课程数组；接口不读写任务表，前端确认后才批量保存。
 app.post("/api/ai/parse-schedule", auth, async (req, res) => {
+  let reservation;
   try {
     const timetable = req.body?.timetable === undefined ? defaultTimetable() : validateTimetable(req.body.timetable);
-    res.json(await parseScheduleFromImage(req.body?.image, timetable));
+    // 图片格式错误（400）必须先于「未配置密钥」与「额度用完」返回，保持原有提示顺序。
+    validateImage(req.body?.image);
+    // 未配置密钥时先返回原提示，避免把配置问题误报成「额度已用完」。
+    if (!process.env.DASHSCOPE_API_KEY?.trim()) return fail(res, 503, "AI 图片解析暂不可用：服务器未配置 DASHSCOPE_API_KEY。");
+    reservation = aiBudget.reserve("qwen");
+    res.json(await parseScheduleFromImage(req.body?.image, timetable,
+      (info) => aiBudget.settle(reservation, { ...info, userId: req.userId })));
   } catch (error) {
     // 给前端有限长度的底层原因，完整原始内容只留在服务端控制台。
     const detail = String(error.message || error.code || error.name || "未知错误").replace(/\s+/g, " ").slice(0, 200);
+    if (error.code === "BUDGET_EXCEEDED") return fail(res, 402, error.message);
     if (error.code === "INVALID_IMAGE" || error.code === "INVALID_TIMETABLE") return fail(res, 400, error.message);
     if (error.code === "CONFIG_MISSING") return fail(res, 503, "AI 图片解析暂不可用：服务器未配置 DASHSCOPE_API_KEY。");
     if (error.code === "PARSE_FAILED") return fail(res, 422, detail);
@@ -427,6 +456,9 @@ app.post("/api/ai/parse-schedule", auth, async (req, res) => {
     if (error.status === 402) return fail(res, 503, `DeepSeek 账户余额不足：${detail}`);
     if (error.status === 429) return fail(res, 503, `AI 服务请求过于频繁：${detail}`);
     return fail(res, 502, `AI 服务暂时不可用（DeepSeek 状态码 ${error.status ?? "未知"}）：${detail}`);
+  } finally {
+    // settle 成功时这里是空操作；请求失败或中途抛错时归还预留额度。
+    aiBudget.release(reservation);
   }
 });
 // AI 规划接口只接收一次性输入并返回结构化 JSON，不保存对话或结果。
@@ -459,14 +491,32 @@ app.post("/api/ai-plan", auth, async (req, res) => {
   const currentTasks = inputTasks.map((task) => ({ name: task.name, date: task.date, time: task.time, duration: task.duration, allDay: task.allDay ?? false, review: task.review }));
   const days = Math.round((Date.parse(`${endDate}T00:00:00Z`) - Date.parse(`${startDate}T00:00:00Z`)) / 86400000) + 1;
   console.log(`[ai-plan] density=${density}, currentTasks=${currentTasks.length}条, target=${densityTarget(days, density)}`);
-  try { res.json(await makeStudyPlan({ goal, startDate, endDate, background, currentTasks, preciseTime, preferredWindow, density })); }
+  // 先确认密钥，再检查额度：两者都不可用时优先提示「未配置密钥」。
+  if (!process.env.DEEPSEEK_API_KEY?.trim()) return fail(res, 503, "AI 规划暂不可用：服务器未配置 DEEPSEEK_API_KEY。");
+  let reservation;
+  try { reservation = aiBudget.reserve("deepseek"); }
   catch (error) {
+    if (error.code === "BUDGET_EXCEEDED") return fail(res, 402, error.message);
+    console.error("AI 费用额度检查失败：", error);
+    return fail(res, 500, "AI 费用额度检查失败，请稍后重试。");
+  }
+  try {
+    res.json(await makeStudyPlan({ goal, startDate, endDate, background, currentTasks, preciseTime, preferredWindow, density,
+      onUsage: (info) => aiBudget.settle(reservation, { ...info, userId: req.userId }) }));
+  } catch (error) {
     if (error.code === "CONFIG_MISSING") return fail(res, 503, "AI 规划暂不可用：服务器未配置 DEEPSEEK_API_KEY。");
     if (error.code === "PLAN_PARSE_FAILED" || error.code === "PARSE_FAILED") return fail(res, 422, error.message);
     if (error.name === "APIConnectionTimeoutError" || error.code === "ETIMEDOUT") return fail(res, 504, "AI 规划超时，请稍后重试。");
     console.error("DeepSeek AI 规划失败：", error.name, error.status || "", error.code || "");
     return fail(res, 502, "AI 规划服务暂时不可用，请稍后重试。");
+  } finally {
+    aiBudget.release(reservation);
   }
+});
+// 费用额度只读接口：页面里展示两家接口的已用金额与上限，金额只在服务端计算。
+app.get("/api/ai/usage", auth, (req, res) => {
+  try { res.json(aiBudget.status()); }
+  catch (error) { console.error("读取 AI 费用记录失败：", error); fail(res, 500, "读取 AI 费用记录失败。"); }
 });
 app.get("/api/settings", auth, (req, res) => res.json(loadState(req.userId).settings));
 app.put("/api/settings", auth, withStateMutation((data, req) => { data.settings = req.body; return data.settings; }));
