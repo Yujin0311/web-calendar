@@ -160,7 +160,8 @@ async function main() {
     }
     await page.setViewportSize({ width: 1440, height: 1000 });
     await page.locator(".ai-course-end").fill("2");
-    await page.locator("#ai-term-monday").fill("2027-10-11");
+    // 2028 年还没有内置放假安排，仍应提示先补充节假日。
+    await page.locator("#ai-term-monday").fill("2028-10-09");
     await page.locator("#ai-draft-confirm").click();
     assert.match(await page.locator("#ai-draft-error").textContent(), /尚未配置.*节假日/);
     await page.locator("#ai-term-monday").fill("2026-10-12");
@@ -231,8 +232,18 @@ async function main() {
       assert(await page.locator("#ocr-add-camera").isVisible());
       if (screenshots) await page.screenshot({ path: path.join(screenshots, `timetable-${width}.png`), fullPage: true });
     }
+    // 2027 年已内置元旦节假日：导入课程不再提示「尚未配置」，可以直接生成任务。
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.locator("#ocr-file").setInputFiles({ name: "schedule.png", mimeType: "image/png", buffer: image });
+    await page.waitForFunction(() => document.querySelector("#ocr-status").textContent.includes("图片已就绪"));
+    await page.locator("#ocr-start").click();
+    await page.locator("#ai-course-list .ai-course-row").waitFor();
+    await page.locator("#ai-term-monday").fill("2027-10-11");
+    await page.locator("#ai-draft-confirm").click();
+    await page.waitForFunction(() => document.querySelector("#ai-schedule-draft").hidden);
+    assert.equal((await remote()).tasks.length, 2, "2027 年课程应能正常建立");
     assert.deepEqual(errors, []);
-    console.log("通过：浏览器作息表编辑/保存/刷新/重新登录/跨浏览器、加号键盘选择、解析与导入报错位置/滚动、最新作息表换算、保存失败回滚、旧缓存同步、1440/390/320px 布局");
+    console.log("通过：浏览器作息表编辑/保存/刷新/重新登录/跨浏览器、加号键盘选择、解析与导入报错位置/滚动、最新作息表换算、保存失败回滚、旧缓存同步、2027 年导入不再提示补充节假日、1440/390/320px 布局");
   } finally {
     if (browser) await browser.close();
     child.kill();

@@ -15,18 +15,9 @@
     { id: "all-day", name: "全天", color: "#85aaa2" }
   ];
 
-  // 国务院办公厅 2025、2026 年放假通知中的日期；下面仅保留工作日。
-  // 2025：https://www.gov.cn/zhengce/zhengceku/202411/content_6986383.htm
-  // 2026：https://www.gov.cn/zhengce/zhengceku/202511/content_7047091.htm
-  const HOLIDAY_RANGES = [
-    ["2025-01-01", "2025-01-01"], ["2025-01-28", "2025-02-04"],
-    ["2025-04-04", "2025-04-06"], ["2025-05-01", "2025-05-05"],
-    ["2025-05-31", "2025-06-02"], ["2025-10-01", "2025-10-08"],
-    ["2026-01-01", "2026-01-03"], ["2026-02-15", "2026-02-23"],
-    ["2026-04-04", "2026-04-06"], ["2026-05-01", "2026-05-05"],
-    ["2026-06-19", "2026-06-21"], ["2026-09-25", "2026-09-27"],
-    ["2026-10-01", "2026-10-07"]
-  ];
+  // 内置节假日与年份覆盖规则集中在 holidays.js：2025–2027 年已内置，导入任务时不再提示补充。
+  const HOLIDAYS = window.QingxuHolidays;
+  function defaultHolidays() { return HOLIDAYS.defaultHolidays(); }
 
   const $ = (selector) => document.querySelector(selector);
   const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -61,13 +52,6 @@
     const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
     return `${values.year}-${values.month}-${values.day}`;
   }
-  function defaultHolidays() {
-    const result = [];
-    for (const [start, end] of HOLIDAY_RANGES) {
-      for (let day = start; day <= end; day = addDays(day, 1)) if (!isWeekend(day)) result.push(day);
-    }
-    return result;
-  }
   function initialState() {
     return { categories: clone(DEFAULT_CATEGORIES), tasks: [], drafts: [], settings: { offsets: [...DEFAULT_OFFSETS], defaultTime: "09:00", holidays: defaultHolidays(), timetable: defaultTimetable() } };
   }
@@ -77,6 +61,7 @@
       if (!stored || !Array.isArray(stored.tasks) || !Array.isArray(stored.drafts) || !Array.isArray(stored.categories)) return initialState();
       const defaults = initialState();
       stored.settings = { ...defaults.settings, ...(stored.settings || {}) };
+      stored.settings.holidays = HOLIDAYS.mergeBuiltinHolidays(stored.settings.holidays);
       stored.settings.timetable = window.QingxuTimetable.normalizeTimetable(stored.settings.timetable);
       return stored;
     } catch { return initialState(); }
@@ -480,7 +465,8 @@
       const years = candidate.recurrence.type !== "none"
         ? new Set(Array.from({ length: Number(candidate.endDate.slice(0, 4)) - Number(candidate.date.slice(0, 4)) + 1 }, (_, index) => String(Number(candidate.date.slice(0, 4)) + index)))
         : new Set((candidate.review ? state.settings.offsets : [0]).map((offset) => addDays(candidate.date, offset)).filter((date) => date <= candidate.endDate).map((date) => date.slice(0, 4)));
-      const missingYears = [...years].filter((year) => !state.settings.holidays.some((date) => date.startsWith(year)));
+      // 2025–2027 年已内置节假日；只有未内置且一条日期都没填的年份才提示补充。
+      const missingYears = HOLIDAYS.missingHolidayYears(years, state.settings.holidays);
       if (missingYears.length) { formError(`课程涉及 ${missingYears.join("、")} 年，但尚未配置这些年份的节假日。请先到设置页填写官方日期。`); return; }
     }
     const generated = candidate.recurrence.type === "none" ? generateEvents(candidate, old?.events || []) : generateRecurringEvents(candidate, old?.events || []);
@@ -1031,9 +1017,9 @@
       const candidate = { id: id(), name, categoryId: category.id, categoryName: category.name, date: firstDate, endDate: lastDate,
         duration, reminder: 15, timeMode: "fixed", time: startTime, note, review: false,
         recurrence: { type: "weekly", weekdays: [weekdayCodes[weekdayIndex]] }, deletedOffsets, events: [] };
-      // 与手动添加「课程」相同：涉及未配置节假日的年份时，请用户先到设置补充。
+      // 与手动添加「课程」相同：2025–2027 年已内置节假日，不再提示补充；其他年份仍请用户到设置补全。
       const years = new Set(weeks.map((week) => addDays(termMonday, (week - 1) * 7 + weekdayIndex).slice(0, 4)));
-      const missing = [...years].filter((year) => !state.settings.holidays.some((date) => date.startsWith(year)));
+      const missing = HOLIDAYS.missingHolidayYears(years, state.settings.holidays);
       if (missing.length) throw Error(`「${name}」涉及 ${missing.join("、")} 年，但尚未配置这些年份的节假日。请先到设置页填写官方日期。`);
       const generated = generateRecurringEvents(candidate);
       candidate.events = generated.events;
@@ -1151,7 +1137,11 @@
   window.QingxuAuth.boot({
     initialState,
     legacyLoader: loadState,
-    onState(data) { notesHidden = false; creditHidden = false; renderPanelToggles(); customDurations.clear(); window.QingxuAI.reset(); window.QingxuPlan.reset(); window.QingxuNotes.accountChanged(window.QingxuAuth.isAuthenticated()); aiDraftInTaskForm = false; state = data; state.settings.timetable = window.QingxuTimetable.normalizeTimetable(state.settings.timetable); renderTimetable(); selectedSearchTaskIds.clear(); $("#task-search").value = "";
+    onState(data) { notesHidden = false; creditHidden = false; renderPanelToggles(); customDurations.clear(); window.QingxuAI.reset(); window.QingxuPlan.reset(); window.QingxuNotes.accountChanged(window.QingxuAuth.isAuthenticated()); aiDraftInTaskForm = false; state = data;
+      // 老账户的设置里可能还没有 2027 年的内置节假日：整年缺失时补上并同步，已有该年日期时保持原样。
+      const mergedHolidays = HOLIDAYS.mergeBuiltinHolidays(state.settings.holidays);
+      if (mergedHolidays.length !== (state.settings.holidays || []).length) { state.settings.holidays = mergedHolidays; if (window.QingxuAuth.isAuthenticated()) save(); }
+      state.settings.timetable = window.QingxuTimetable.normalizeTimetable(state.settings.timetable); renderTimetable(); selectedSearchTaskIds.clear(); $("#task-search").value = "";
       // 老账户原有分类中补上新的全天分类，不修改已有任务。
       if (window.QingxuAuth.isAuthenticated() && !state.categories.some((category) => category.name === "全天") && state.categories.length < 200) { state.categories.push(clone(DEFAULT_CATEGORIES.at(-1))); save(); }
       selectedDate = todayShanghai(); displayedMonth = selectedDate.slice(0, 7); render(); if (window.QingxuAuth.isAuthenticated()) showView("plan"); },

@@ -588,7 +588,7 @@ app.delete("/api/export/history", auth, (req, res) => {
   } catch (error) { fail(res, 500, error.message || "清空导出记录失败。"); }
 });
 
-// 只公开三个前端文件；数据库和密钥所在的 data 目录不会被静态服务访问。
+// 只公开前端静态文件；数据库和密钥所在的 data 目录不会被静态服务访问。
 app.get("/", (req, res) => res.sendFile(path.join(__dirname, "index.html")));
 app.get("/index.html", (req, res) => res.sendFile(path.join(__dirname, "index.html")));
 app.get(["/login", "/register"], (req, res) => res.sendFile(path.join(__dirname, "index.html")));
@@ -596,6 +596,7 @@ app.get("/style.css", (req, res) => res.sendFile(path.join(__dirname, "style.css
 app.get("/script.js", (req, res) => res.sendFile(path.join(__dirname, "script.js")));
 app.get("/auth.js", (req, res) => res.sendFile(path.join(__dirname, "auth.js")));
 app.get("/timetable.js", (req, res) => res.sendFile(path.join(__dirname, "timetable.js")));
+app.get("/holidays.js", (req, res) => res.sendFile(path.join(__dirname, "holidays.js")));
 app.get("/ai-schedule-client.js", (req, res) => res.sendFile(path.join(__dirname, "ai-schedule-client.js")));
 app.get("/notes-client.js", (req, res) => res.sendFile(path.join(__dirname, "notes-client.js")));
 app.get("/ai-plan-client.js", (req, res) => res.sendFile(path.join(__dirname, "ai-plan-client.js")));
