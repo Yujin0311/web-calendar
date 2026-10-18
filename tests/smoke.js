@@ -38,7 +38,7 @@ async function main() {
     // REGISTER_MAX_ATTEMPTS 临时调高：冒烟测试要连续注册多个账户，不测试限流路径。
     // DASHSCOPE_API_KEY / DEEPSEEK_API_KEY 显式置空：dotenv 不覆盖已存在的环境变量，
     // 否则子进程会从 .env 读到真实密钥，未配置密钥的断言就测不到。
-    cwd: root, env: { ...process.env, PORT: String(port), DEEPSEEK_API_KEY: "", DASHSCOPE_API_KEY: "", QINGXU_DATA_DIR: path.join(temp, "data"), QINGXU_EXPORT_HISTORY_FILE: historyFile, REGISTER_MAX_ATTEMPTS: "1000", LOGIN_MAX_ATTEMPTS: "1000", AI_LIMIT_DEEPSEEK_CNY: "100", AI_LIMIT_QWEN_CNY: "100" }, stdio: ["ignore", "pipe", "pipe"]
+    cwd: root, env: { ...process.env, PORT: String(port), DEEPSEEK_API_KEY: "", DASHSCOPE_API_KEY: "", QINGXU_DATA_DIR: path.join(temp, "data"), QINGXU_EXPORT_HISTORY_FILE: historyFile, REGISTER_MAX_ATTEMPTS: "1000", LOGIN_MAX_ATTEMPTS: "1000" }, stdio: ["ignore", "pipe", "pipe"]
   });
   let serverOutput = "";
   child.stdout.on("data", (chunk) => { serverOutput += chunk.toString(); });
@@ -64,7 +64,6 @@ async function main() {
     assert.equal(unauthenticatedAi.status, 401, "AI 图片接口必须校验登录状态");
     assert.equal((await api("/api/notes")).status, 401, "便签接口必须校验登录状态");
     assert.equal((await api("/api/ai-plan", "POST", {})).status, 401, "AI 规划接口必须校验登录状态");
-    assert.equal((await api("/api/ai/usage")).status, 401, "AI 费用接口必须校验登录状态");
     // 邀请码注册：先通过管理 CLI 在临时库生成邀请码，再验证负路径与正常注册。
     const inviteCode = await new Promise((resolve, reject) => {
       const cli = spawn(process.execPath, [path.join(root, "scripts", "admin.js"), "invite", "generate", "10", "smoke-test"], { cwd: root, env: { ...process.env, QINGXU_DATA_DIR: path.join(temp, "data") }, stdio: ["ignore", "pipe", "pipe"] });
@@ -95,9 +94,6 @@ async function main() {
     assert.equal(missingAccountData.error, "账号错误，请检查账户名。", "账号不存在应显示「账号错误」");
     const correctLogin = await api("/api/auth/login", "POST", { username: smokeUsername, password: smokePassword });
     assert.equal(correctLogin.status, 200, "账号密码正确时应能登录");
-    const aiUsage = await (await api("/api/ai/usage")).json();
-    assert.deepEqual(aiUsage.providers.map((item) => [item.provider, item.limitCny, item.spentCny]),
-      [["deepseek", 100, 0], ["qwen", 100, 0]], "AI 额度默认各 100 元，新库应没有已用金额");
     assert.deepEqual(await (await api("/api/notes")).json(), [], "新账户的便签应为空");
     const createdNoteResponse = await api("/api/notes", "POST", { content: "记住公式", side: "left" });
     assert.equal(createdNoteResponse.status, 201);

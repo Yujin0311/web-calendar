@@ -24,7 +24,6 @@
 | `user_settings` | `user_id`, `offsets_json`, `default_time`, `holidays_json`, `timetable_json` | 复习节点、默认时间、课程节假日，以及第四次迭代新增的作息表（每节课的起止时间、每天课时数、单节时长与课间） |
 | `tasks` | `id`, `user_id`, `category_id`, `name`, `start_date`, `end_date`, `duration`, `reminder`, `time_mode`, `start_time`, `note`, `review`, `all_day`, `plan_group`, `parent_task_id`, `repeat_type`, `repeat_weekdays_json`, `deleted_offsets_json`, `draft_form_json`, `status` | 任务、全天标记、AI 父子关联、重复设置和草稿 |
 | `occurrences` | `id`, `user_id`, `task_id`, `offset_days`, `round_number`, `event_date`, `start_time`, `duration`, `completed` | 每条独立日程，可单独删除 |
-| `ai_usage` | `id`, `user_id`, `provider`, `model`, `prompt_tokens`, `cache_hit_tokens`, `completion_tokens`, `total_tokens`, `cost_cny`, `created_at` | 每次 AI 调用的 token 用量与折算金额；`provider` 为 `deepseek`（AI 规划）或 `qwen`（图片识别），两家分别累计金额上限 |
 
 所有任务表都带用户归属，API 按当前 JWT 用户查询或修改。前端使用 `localStorage` 中的用户专属缓存支持断网时继续查看和编辑，重新联网后同步。当前版本为单设备优先的最后写入覆盖模型，不提供多设备冲突合并。
 
@@ -53,7 +52,6 @@
 | GET、POST | `/api/notes` | 列出、新增当前用户便签（最多 30 条） |
 | PUT、DELETE | `/api/notes/:id` | 编辑、删除当前用户便签（单条最多 250 字） |
 | POST | `/api/ai-plan` | 接收目标、日期、基础情况、是否精确到钟点、任务密度与可选高效时间段，并附带用户已有任务的占用时段；返回待确认规划 JSON |
-| GET | `/api/ai/usage` | 读取两家 AI 接口的已用金额、上限与调用次数；金额只在服务端按 token 用量计算 |
 
 ## 苹果日历导入说明
 
@@ -201,24 +199,6 @@ npm run invite -- disable QX-XXXX-XXXX-XXXX # 停用指定邀请码
 npm run clean-sessions
 ```
 
-### AI 费用上限
-
-DeepSeek（AI 规划）与千问/百炼（图片识别）分别累计花费，默认各 **100 元**：
-
-- 每次调用按接口返回的 `usage` 记录 token 数并折算金额，写入 `ai_usage` 表；金额只在服务端计算，前端仅展示。
-- 累计金额达到上限后，`/api/ai-plan` 与 `/api/ai/parse-schedule` 直接返回 **402** 并给出中文原因，不再向模型发请求，也就不会再产生新费用。
-- 页面「设置 → AI 费用额度」显示两家的已用金额、上限与调用次数，可手动刷新。
-- 额度只统计本服务发起的请求；同一密钥在别处使用时，真实账单会高于页面金额。
-- 单价默认按发布时的官网价目填写。官方调价后请修改 `AI_PRICE_*`，否则页面显示的是估算金额，可与运营商账单核对后再校准。
-
-修改上限或清零重新累计：
-
-```powershell
-# 在 .env 中改 AI_LIMIT_DEEPSEEK_CNY / AI_LIMIT_QWEN_CNY 后重启服务
-# 清空两家接口的用量记录，额度从 0 重新累计
-node -e "const D=require('better-sqlite3');new D('data/qingxu.sqlite').exec('DELETE FROM ai_usage')"
-```
-
 ### 配置项与迁移
 
 以下均为可选项，写在 `.env` 中（参见 `.env.example`），未设置时使用默认值：
@@ -235,11 +215,6 @@ node -e "const D=require('better-sqlite3');new D('data/qingxu.sqlite').exec('DEL
 | `SESSION_CLEANUP_INTERVAL_MINUTES` | `120` | 清理定时任务间隔（分钟） |
 | `SESSION_CLEANUP_BATCH_SIZE` | `100` | 每批删除会话条数 |
 | `SESSION_ACTIVITY_REFRESH_SECONDS` | `300` | 活跃时间刷新节流（秒） |
-| `AI_LIMIT_DEEPSEEK_CNY` | `100` | DeepSeek（AI 规划）累计金额上限（元），达到后接口拒绝调用 |
-| `AI_LIMIT_QWEN_CNY` | `100` | 千问/百炼（图片识别）累计金额上限（元） |
-| `AI_PRICE_DEEPSEEK_INPUT` / `_CACHE_HIT` / `_OUTPUT` | `4` / `0.5` / `12` | DeepSeek 单价（元 / 百万 tokens），按官网价目修改 |
-| `AI_PRICE_QWEN_INPUT` / `_OUTPUT` | `2` / `8` | 千问单价（元 / 百万 tokens），按官网价目修改 |
-| `AI_RESERVE_DEEPSEEK_CNY` / `AI_RESERVE_QWEN_CNY` | `0.2` / `0.3` | 单次调用预留额度（元），并发请求时先占位，避免同时越过上限 |
 
 数据库变更为 `migrations/001_invite_codes_and_session_cleanup.sql`（邀请码与会话清理，第三次迭代）与 `migrations/002_user_settings_timetable.sql`（作息表补列，第四次迭代），可手动执行：
 
