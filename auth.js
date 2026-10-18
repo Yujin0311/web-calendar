@@ -197,8 +197,6 @@
     deleteNote(id) { return request(`/notes/${encodeURIComponent(id)}`, "DELETE"); },
     // 规划请求只返回一次性 JSON，不写入浏览器缓存。
     requestAiPlan(input) { return request("/ai-plan", "POST", input); },
-    // AI 费用额度（已用金额与上限）由服务端按 token 用量累计，前端只做展示。
-    aiUsage() { return request("/ai/usage"); },
     // 仅将本次图片的 data URL 交给受登录保护的解析接口，不写入本地任务缓存。
     async parseScheduleFromImage(image, timetable, signal) {
       if (!session?.token) throw Error("请先登录。");

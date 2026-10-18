@@ -15,8 +15,6 @@ const { defaultTimetable, validateTimetable, normalizeTimetable } = require("./t
 // AI 规划助手与图片课表识别都在 deepseekSchedule 中：规划走 DeepSeek chat completions，
 // 图片识别走百炼 qwen3-vl-plus 视觉模型。
 const { makeStudyPlan, parseScheduleFromImage, validateImage, densityTarget } = require("./services/deepseekSchedule");
-// AI 费用上限：按接口累计 token 花费，超过额度后停止调用（默认各 100 元，可在 .env 调整）。
-const { createAiBudget } = require("./services/aiBudget");
 
 // 本地开发读取 .env；Render 等部署环境直接提供同名环境变量。
 require("dotenv").config({ path: path.join(__dirname, ".env"), quiet: true });
@@ -169,9 +167,6 @@ if (!db.prepare("PRAGMA table_info(sessions)").all().some((column) => column.nam
   db.exec("ALTER TABLE sessions ADD COLUMN last_activity_at INTEGER NOT NULL DEFAULT 0; ALTER TABLE sessions ADD COLUMN expire_at INTEGER NOT NULL DEFAULT 0;");
   db.exec("UPDATE sessions SET last_activity_at = CAST(strftime('%s', created_at) AS INTEGER) * 1000, expire_at = expires_at WHERE last_activity_at = 0");
 }
-// AI 费用上限：建表与累计查询都在 aiBudget 里完成，接口只负责预留/结算/失败归还。
-const aiBudget = createAiBudget(db);
-
 app.disable("x-powered-by");
 app.use(express.json({ limit: "10mb" }));
 app.use((req, res, next) => { res.setHeader("Cache-Control", "no-store"); next(); });
@@ -433,20 +428,15 @@ app.put("/api/sync", auth, (req, res) => {
 });
   // AI 只返回完整课表课程数组；接口不读写任务表，前端确认后才批量保存。
 app.post("/api/ai/parse-schedule", auth, async (req, res) => {
-  let reservation;
   try {
     const timetable = req.body?.timetable === undefined ? defaultTimetable() : validateTimetable(req.body.timetable);
-    // 图片格式错误（400）必须先于「未配置密钥」与「额度用完」返回，保持原有提示顺序。
+    // 图片格式错误（400）必须先于「未配置密钥」返回，保持原有提示顺序。
     validateImage(req.body?.image);
-    // 未配置密钥时先返回原提示，避免把配置问题误报成「额度已用完」。
     if (!process.env.DASHSCOPE_API_KEY?.trim()) return fail(res, 503, "AI 图片解析暂不可用：服务器未配置 DASHSCOPE_API_KEY。");
-    reservation = aiBudget.reserve("qwen");
-    res.json(await parseScheduleFromImage(req.body?.image, timetable,
-      (info) => aiBudget.settle(reservation, { ...info, userId: req.userId })));
+    res.json(await parseScheduleFromImage(req.body?.image, timetable));
   } catch (error) {
     // 给前端有限长度的底层原因，完整原始内容只留在服务端控制台。
     const detail = String(error.message || error.code || error.name || "未知错误").replace(/\s+/g, " ").slice(0, 200);
-    if (error.code === "BUDGET_EXCEEDED") return fail(res, 402, error.message);
     if (error.code === "INVALID_IMAGE" || error.code === "INVALID_TIMETABLE") return fail(res, 400, error.message);
     if (error.code === "CONFIG_MISSING") return fail(res, 503, "AI 图片解析暂不可用：服务器未配置 DASHSCOPE_API_KEY。");
     if (error.code === "PARSE_FAILED") return fail(res, 422, detail);
@@ -456,9 +446,6 @@ app.post("/api/ai/parse-schedule", auth, async (req, res) => {
     if (error.status === 402) return fail(res, 503, `DeepSeek 账户余额不足：${detail}`);
     if (error.status === 429) return fail(res, 503, `AI 服务请求过于频繁：${detail}`);
     return fail(res, 502, `AI 服务暂时不可用（DeepSeek 状态码 ${error.status ?? "未知"}）：${detail}`);
-  } finally {
-    // settle 成功时这里是空操作；请求失败或中途抛错时归还预留额度。
-    aiBudget.release(reservation);
   }
 });
 // AI 规划接口只接收一次性输入并返回结构化 JSON，不保存对话或结果。
@@ -491,32 +478,17 @@ app.post("/api/ai-plan", auth, async (req, res) => {
   const currentTasks = inputTasks.map((task) => ({ name: task.name, date: task.date, time: task.time, duration: task.duration, allDay: task.allDay ?? false, review: task.review }));
   const days = Math.round((Date.parse(`${endDate}T00:00:00Z`) - Date.parse(`${startDate}T00:00:00Z`)) / 86400000) + 1;
   console.log(`[ai-plan] density=${density}, currentTasks=${currentTasks.length}条, target=${densityTarget(days, density)}`);
-  // 先确认密钥，再检查额度：两者都不可用时优先提示「未配置密钥」。
+  // 未配置密钥时不向模型发请求。
   if (!process.env.DEEPSEEK_API_KEY?.trim()) return fail(res, 503, "AI 规划暂不可用：服务器未配置 DEEPSEEK_API_KEY。");
-  let reservation;
-  try { reservation = aiBudget.reserve("deepseek"); }
-  catch (error) {
-    if (error.code === "BUDGET_EXCEEDED") return fail(res, 402, error.message);
-    console.error("AI 费用额度检查失败：", error);
-    return fail(res, 500, "AI 费用额度检查失败，请稍后重试。");
-  }
   try {
-    res.json(await makeStudyPlan({ goal, startDate, endDate, background, currentTasks, preciseTime, preferredWindow, density,
-      onUsage: (info) => aiBudget.settle(reservation, { ...info, userId: req.userId }) }));
+    res.json(await makeStudyPlan({ goal, startDate, endDate, background, currentTasks, preciseTime, preferredWindow, density }));
   } catch (error) {
     if (error.code === "CONFIG_MISSING") return fail(res, 503, "AI 规划暂不可用：服务器未配置 DEEPSEEK_API_KEY。");
     if (error.code === "PLAN_PARSE_FAILED" || error.code === "PARSE_FAILED") return fail(res, 422, error.message);
     if (error.name === "APIConnectionTimeoutError" || error.code === "ETIMEDOUT") return fail(res, 504, "AI 规划超时，请稍后重试。");
     console.error("DeepSeek AI 规划失败：", error.name, error.status || "", error.code || "");
     return fail(res, 502, "AI 规划服务暂时不可用，请稍后重试。");
-  } finally {
-    aiBudget.release(reservation);
   }
-});
-// 费用额度只读接口：页面里展示两家接口的已用金额与上限，金额只在服务端计算。
-app.get("/api/ai/usage", auth, (req, res) => {
-  try { res.json(aiBudget.status()); }
-  catch (error) { console.error("读取 AI 费用记录失败：", error); fail(res, 500, "读取 AI 费用记录失败。"); }
 });
 app.get("/api/settings", auth, (req, res) => res.json(loadState(req.userId).settings));
 app.put("/api/settings", auth, withStateMutation((data, req) => { data.settings = req.body; return data.settings; }));

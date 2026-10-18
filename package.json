@@ -11,7 +11,7 @@
     "dev": "node server.js",
     "invite": "node scripts/admin.js invite",
     "clean-sessions": "node scripts/admin.js session clean",
-    "test": "node tests/smoke.js && node tests/deepseek-schedule-plan.js && node tests/ai-budget.js && node tests/timetable.js && node tests/holidays.js && node tests/auth-limit.js"
+    "test": "node tests/smoke.js && node tests/deepseek-schedule-plan.js && node tests/timetable.js && node tests/holidays.js && node tests/auth-limit.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
