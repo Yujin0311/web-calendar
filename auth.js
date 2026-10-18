@@ -204,10 +204,36 @@
       if (!session?.token) throw Error("请先登录。");
       const response = await fetch("/api/ai/parse-schedule", {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.token}` },
+        headers: { "Content-Type": "application/json", Accept: "application/x-ndjson", Authorization: `Bearer ${session.token}` },
         body: JSON.stringify({ image, timetable }),
         signal
       });
+      if (response.ok && response.headers.get("Content-Type")?.includes("application/x-ndjson")) {
+        if (!response.body) throw Error("解析连接已中断，请重试。");
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let pending = "";
+        try {
+          while (true) {
+            const { value, done } = await reader.read();
+            pending += decoder.decode(value, { stream: !done });
+            if (pending.length > 1024 * 1024) throw Error("AI 返回内容过大，请重试。");
+            const lines = pending.split("\n");
+            pending = lines.pop();
+            if (done && pending.trim()) { lines.push(pending); pending = ""; }
+            for (const line of lines) {
+              if (!line.trim()) continue;
+              const frame = JSON.parse(line);
+              if (frame.type === "error") throw Object.assign(new Error(frame.error || "AI 解析失败，请重试。"), { status: frame.status });
+              if (frame.type === "result") return frame.data;
+            }
+            if (done) throw Error("解析连接已中断，请重试。");
+          }
+        } finally {
+          await reader.cancel().catch(() => {});
+          reader.releaseLock();
+        }
+      }
       const result = await response.json().catch(() => ({}));
       if (!response.ok) throw Object.assign(new Error(result.error || `AI 解析失败（${response.status}）`), { status: response.status });
       return result;

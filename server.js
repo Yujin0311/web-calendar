@@ -17,6 +17,7 @@ const { defaultTimetable, validateTimetable, normalizeTimetable } = require("./t
 const { makeStudyPlan, parseScheduleFromImage, validateImage, densityTarget } = require("./services/deepseekSchedule");
 // AI 费用上限：按接口累计 token 花费，超过额度后停止调用（默认各 100 元，可在 .env 调整）。
 const { createAiBudget } = require("./services/aiBudget");
+const { startImageResponse } = require("./services/aiImageResponse");
 
 // 本地开发读取 .env；Render 等部署环境直接提供同名环境变量。
 require("dotenv").config({ path: path.join(__dirname, ".env"), quiet: true });
@@ -433,31 +434,35 @@ app.put("/api/sync", auth, (req, res) => {
 });
   // AI 只返回完整课表课程数组；接口不读写任务表，前端确认后才批量保存。
 app.post("/api/ai/parse-schedule", auth, async (req, res) => {
-  let reservation;
+  let reservation, transfer;
+  const imageFail = (status, message) => transfer ? transfer.fail(status, message) : fail(res, status, message);
   try {
     const timetable = req.body?.timetable === undefined ? defaultTimetable() : validateTimetable(req.body.timetable);
     // 图片格式错误（400）必须先于「未配置密钥」与「额度用完」返回，保持原有提示顺序。
     validateImage(req.body?.image);
     // 未配置密钥时先返回原提示，避免把配置问题误报成「额度已用完」。
-    if (!process.env.DASHSCOPE_API_KEY?.trim()) return fail(res, 503, "AI 图片解析暂不可用：服务器未配置 DASHSCOPE_API_KEY。");
+    if (!process.env.DASHSCOPE_API_KEY?.trim()) return imageFail(503, "AI 图片解析暂不可用：服务器未配置 DASHSCOPE_API_KEY。");
     reservation = aiBudget.reserve("qwen");
-    res.json(await parseScheduleFromImage(req.body?.image, timetable,
-      (info) => aiBudget.settle(reservation, { ...info, userId: req.userId })));
+    transfer = startImageResponse(req, res);
+    const result = await parseScheduleFromImage(req.body?.image, timetable,
+      (info) => aiBudget.settle(reservation, { ...info, userId: req.userId }), transfer.signal);
+    transfer.succeed(result);
   } catch (error) {
     // 给前端有限长度的底层原因，完整原始内容只留在服务端控制台。
     const detail = String(error.message || error.code || error.name || "未知错误").replace(/\s+/g, " ").slice(0, 200);
-    if (error.code === "BUDGET_EXCEEDED") return fail(res, 402, error.message);
-    if (error.code === "INVALID_IMAGE" || error.code === "INVALID_TIMETABLE") return fail(res, 400, error.message);
-    if (error.code === "CONFIG_MISSING") return fail(res, 503, "AI 图片解析暂不可用：服务器未配置 DASHSCOPE_API_KEY。");
-    if (error.code === "PARSE_FAILED") return fail(res, 422, detail);
-    console.error("DeepSeek 图片解析失败：", error.name, error.status || "", error.code || "", detail);
-    if (error.name === "APIConnectionTimeoutError" || error.message === "Request timed out." || error.code === "ETIMEDOUT") return fail(res, 504, `AI 解析超时（90 秒）：${detail}`);
-    if (error.status === 401 || error.status === 403) return fail(res, 502, `DeepSeek 授权失败：${detail}`);
-    if (error.status === 402) return fail(res, 503, `DeepSeek 账户余额不足：${detail}`);
-    if (error.status === 429) return fail(res, 503, `AI 服务请求过于频繁：${detail}`);
-    return fail(res, 502, `AI 服务暂时不可用（DeepSeek 状态码 ${error.status ?? "未知"}）：${detail}`);
+    if (error.code === "BUDGET_EXCEEDED") return imageFail(402, error.message);
+    if (error.code === "INVALID_IMAGE" || error.code === "INVALID_TIMETABLE") return imageFail(400, error.message);
+    if (error.code === "CONFIG_MISSING") return imageFail(503, "AI 图片解析暂不可用：服务器未配置 DASHSCOPE_API_KEY。");
+    if (error.code === "PARSE_FAILED") return imageFail(422, detail);
+    console.error("DashScope 图片解析失败：", error.name, error.status || "", error.code || "", detail);
+    if (error.name === "APIConnectionTimeoutError" || error.message === "Request timed out." || error.code === "ETIMEDOUT") return imageFail(504, `AI 解析超时（180 秒）：${detail}`);
+    if (error.status === 401 || error.status === 403) return imageFail(502, `DashScope 授权失败：${detail}`);
+    if (error.status === 402) return imageFail(503, `DashScope 账户余额不足：${detail}`);
+    if (error.status === 429) return imageFail(503, `AI 服务请求过于频繁：${detail}`);
+    return imageFail(502, `AI 服务暂时不可用（DashScope 状态码 ${error.status ?? "未知"}）：${detail}`);
   } finally {
     // settle 成功时这里是空操作；请求失败或中途抛错时归还预留额度。
+    transfer?.dispose();
     aiBudget.release(reservation);
   }
 });
@@ -597,6 +602,7 @@ app.get("/script.js", (req, res) => res.sendFile(path.join(__dirname, "script.js
 app.get("/auth.js", (req, res) => res.sendFile(path.join(__dirname, "auth.js")));
 app.get("/timetable.js", (req, res) => res.sendFile(path.join(__dirname, "timetable.js")));
 app.get("/holidays.js", (req, res) => res.sendFile(path.join(__dirname, "holidays.js")));
+app.get("/image-upload.js", (req, res) => res.sendFile(path.join(__dirname, "image-upload.js")));
 app.get("/ai-schedule-client.js", (req, res) => res.sendFile(path.join(__dirname, "ai-schedule-client.js")));
 app.get("/notes-client.js", (req, res) => res.sendFile(path.join(__dirname, "notes-client.js")));
 app.get("/ai-plan-client.js", (req, res) => res.sendFile(path.join(__dirname, "ai-plan-client.js")));

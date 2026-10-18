@@ -89,15 +89,6 @@ window.QingxuAI = (() => {
     image.src = url;
   }
 
-  function readDataUrl(file) {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => typeof reader.result === "string" ? resolve(reader.result) : reject(Error("图片读取失败，请重试。"));
-      reader.onerror = () => reject(Error("图片读取失败，请更换图片重试。"));
-      reader.readAsDataURL(file);
-    });
-  }
-
   // 课程草稿在浏览器内核对，只有勾选并确认后才交给原有状态保存流程。
   function field(label, value, className, type = "text") {
     const wrapper = document.createElement("label");
@@ -173,11 +164,14 @@ window.QingxuAI = (() => {
       const currentRequest = ++requestToken;
       const controller = new AbortController();
       activeController = controller;
-      // 后端视觉解析超时上限 90 秒，这里留 5 秒余量后再中断。
-      const timer = setTimeout(() => controller.abort(), 95_000);
+      // 后端上限 180 秒；额外留出图片处理、上传及代理传输时间。
+      const timer = setTimeout(() => controller.abort(), 210_000);
       try {
-        const image = await readDataUrl(selectedFile);
+        $("#ocr-status").textContent = "正在优化图片…";
+        const image = await window.QingxuImageUpload.prepare(selectedFile, controller.signal);
         if (currentRequest !== requestToken) return;
+        controller.signal.throwIfAborted();
+        $("#ocr-status").textContent = "正在 AI 解析日程，请稍候（最长约 3 分钟）…";
         const schedule = await window.QingxuAuth.parseScheduleFromImage(image, getTimetable(), controller.signal);
         if (currentRequest !== requestToken) return;
         if (!schedule || schedule.isValid === false) { showError("图片中没有识别到学习日程，请换一张清晰的照片。"); return; }

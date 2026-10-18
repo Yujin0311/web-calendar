@@ -12,9 +12,9 @@ const DEEPSEEK_BASE_URL = "https://api.deepseek.com";
 const DEEPSEEK_MODEL = "deepseek-chat";
 // 图片识别用的百炼视觉模型：费用上限也按这个模型结算。
 const QWEN_MODEL = "qwen3-vl-plus";
-// 禁用 SDK 自动重试；规划属于长输出请求，超时放宽到 90 秒
-//（须小于 nginx proxy_read_timeout 与 Cloudflare 100 秒限制）。
+// 规划接口保留 90 秒上限；图片解析使用单独的 180 秒上限与进度心跳。
 const REQUEST_TIMEOUT_MS = 90_000;
+const IMAGE_TIMEOUT_MS = 180_000;
 const MAX_TOKENS = 8192;
 
 const SYSTEM_PROMPT = `你是学习计划规划助手。请根据用户给出的学习目标、起止日期、基础情况、已有任务、是否需要精确到小时以及偏好时间段，拆分为可执行的阶段与任务，写成一份日程计划。
@@ -362,16 +362,20 @@ function validateScheduleFromImage(data) {
   return data;
 }
 
-async function parseScheduleFromImage(base64Image, timetable, onUsage) {
+async function parseScheduleFromImage(base64Image, timetable, onUsage, signal) {
   validateImage(base64Image);
   const schoolTimetable = require("../timetable").normalizeTimetable(timetable);
   const timetablePrompt = `本校作息表（24 小时制，节次与时间一一对应，每天共 ${schoolTimetable.periodsPerDay} 节）：\n${schoolTimetable.periods.map((period) => `第${period.section}节 ${period.start}-${period.end}`).join("\n")}\n规则：sectionStart/sectionEnd 必须依据这张作息表判断；节次不得超出作息表范围；不要把作息表时间写进 JSON 的其它字段；识别不到节次时按原规则填空。`;
   const apiKey = process.env.DASHSCOPE_API_KEY?.trim();
   if (!apiKey) throw codedError("CONFIG_MISSING", "服务器尚未配置百炼 API Key。");
-  // 禁用 SDK 自动重试。高密度课表图片的 OCR + 推理 + 长 JSON 输出可能超过 60 秒，
-  // 超时设为 90 秒（须小于 nginx proxy_read_timeout 与 Cloudflare 100 秒限制）。
-  const client = new OpenAI({ apiKey, baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1", timeout: REQUEST_TIMEOUT_MS, maxRetries: 0 });
-  const response = await client.chat.completions.create({
+  // 图片解析单独放宽至 180 秒；浏览器进度响应每 15 秒发送心跳。
+  // deadline 限制整个上游调用，客户端离开时也停止请求，不进行自动重试。
+  const deadline = AbortSignal.timeout(IMAGE_TIMEOUT_MS);
+  const requestSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
+  const startedAt = Date.now();
+  const client = new OpenAI({ apiKey, baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1", timeout: IMAGE_TIMEOUT_MS, maxRetries: 0 });
+  let response;
+  try { response = await client.chat.completions.create({
     model: QWEN_MODEL,
     response_format: { type: "json_object" },
     // qwen3-vl-plus 的思考 token 也计入 max_tokens；密集课表的推理 + 完整课程 JSON
@@ -385,7 +389,13 @@ async function parseScheduleFromImage(base64Image, timetable, onUsage) {
         { type: "image_url", image_url: { url: base64Image, detail: "low" } }
       ] }
     ]
-  });
+  }, { signal: requestSignal }); }
+  catch (error) {
+    console.info("[ocr] upstream_failed", JSON.stringify({ elapsedMs: Date.now() - startedAt, name: error.name }));
+    if (deadline.aborted && !signal?.aborted) throw codedError("ETIMEDOUT", "Request timed out.");
+    throw error;
+  }
+  console.info("[ocr] upstream_completed", JSON.stringify({ elapsedMs: Date.now() - startedAt, imageBytes: Buffer.from(base64Image.split(",")[1], "base64").length, requestId: response._request_id || response.id }));
   const rawContent = response.choices?.[0]?.message?.content;
   const finishReason = response.choices?.[0]?.finish_reason ?? "未知";
   const usage = response.usage ?? null;
